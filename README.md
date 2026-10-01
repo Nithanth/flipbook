@@ -7,8 +7,8 @@
 ## Development
 
 ```bash
-uv venv .venv --python 3.12
-uv pip install -e '.[dev]'
-source .venv/bin/activate
-pytest -q && ruff check src tests
+uv sync --extra dev
+uv run pytest -q
+uv run ruff check src tests
+uv run scripts/verify_instrument.py   # --offline skips live API checks
 ```
