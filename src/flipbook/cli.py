@@ -11,9 +11,12 @@ import sys
 
 from flipbook.budget import budget
 from flipbook.config import RunConfig
+from flipbook.diverge import diverge
+from flipbook.effort import effort_gap
 from flipbook.lint import lint
 from flipbook.manifest import Manifest
 from flipbook.runner import LintFailed, evaluate, resolve_model
+from flipbook.stats import compare, gate
 from flipbook.store import Store
 
 
@@ -103,6 +106,28 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("run")
     _add_store(p)
 
+    p = sub.add_parser("compare", help="paired stats between two runs")
+    p.add_argument("run_a")
+    p.add_argument("run_b")
+    p.add_argument("--gate", action="store_true", help="exit 2 on a significant regression")
+    p.add_argument("--max-regression", type=float, default=0.02)
+    p.add_argument("--max-new-truncation-rate", type=float, default=0.0)
+    p.add_argument("--json", action="store_true")
+    _add_store(p)
+
+    p = sub.add_parser("diverge", help="per-token logprob gap of ckpt vs base on base's traces")
+    p.add_argument("--base", required=True)
+    p.add_argument("--ckpt", required=True)
+    p.add_argument("--rows", choices=["flips", "all"], default="all")
+    p.add_argument("--forecast", action="store_true")
+    _add_store(p)
+
+    p = sub.add_parser("effort", help="effort-prefix gap for one run's traces")
+    p.add_argument("--run", required=True)
+    p.add_argument("--pair", required=True, help="e_low,e_high")
+    p.add_argument("--forecast", action="store_true")
+    _add_store(p)
+
     args = ap.parse_args(argv)
 
     if args.cmd == "freeze":
@@ -163,6 +188,59 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "budget":
         b = budget(_store(args), args.run)
         print(json.dumps(b.__dict__, indent=2))
+        return 0
+
+    if args.cmd == "compare":
+        pair = compare(_store(args), args.run_a, args.run_b)
+        if args.json:
+            print(json.dumps(pair.to_dict(), indent=2))
+        else:
+            a = pair.agreement
+            print(f"{pair.run_a} acc={pair.acc_a:.3f}  vs  {pair.run_b} acc={pair.acc_b:.3f}")
+            print(f"delta {pair.delta:+.3f}  CI [{pair.delta_ci[0]:+.3f}, {pair.delta_ci[1]:+.3f}]"
+                  f"  on {pair.n_pairs} paired rows ({len(pair.excluded)} excluded)")
+            print(f"agreement: both {a['both_right']}/{a['both_wrong']} "
+                  f"a_only {a['a_only']} b_only {a['b_only']}")
+            print(f"flips: {len(pair.flips)}  "
+                  f"truncation {pair.truncation_rate_a:.2f} → {pair.truncation_rate_b:.2f}  "
+                  f"cost ${pair.cost_a:.3f} vs ${pair.cost_b:.3f}")
+            for f in pair.flips:
+                tag = "HARD " if f["hard"] else ""
+                print(f"  {tag}{f['kind']}: {f['row_id']}  {f['p_a']:.2f} → {f['p_b']:.2f}")
+            for e in pair.excluded:
+                print(f"  excluded {e['row_id']}: {e['reason']}")
+        if args.gate:
+            ok, reasons = gate(pair, args.max_regression, args.max_new_truncation_rate)
+            for r in reasons:
+                print(f"GATE FAIL: {r}", file=sys.stderr)
+            return 0 if ok else 2
+        return 0
+
+    if args.cmd == "diverge":
+        store = _store(args)
+        rows = None
+        if args.rows == "flips":
+            pair = compare(store, args.base, args.ckpt)
+            rows = [f["row_id"] for f in pair.flips]
+        s = diverge(store, args.base, args.ckpt, rows, forecast=args.forecast)
+        if args.forecast:
+            print(f"forecast: {s.n_rows} rows · ~{s.forecast['prefill_tokens']:,} prefill tok "
+                  f"· ~${s.est_cost_usd or 0:.3f} discount · ~${s.forecast['usd_list'] or 0:.3f} list")
+            return 0
+        print(f"{s.base_run_id} → {s.ckpt_run_id}: {s.n_rows} rows · "
+              f"mean gap {s.mean_sum_nats:+.1f} nats · diverged {s.n_diverged} · "
+              f"p_skip {s.mean_p_skip_base:.3f} → {s.mean_p_skip_ckpt:.3f} · ~${s.est_cost_usd or 0:.4f}")
+        return 0
+
+    if args.cmd == "effort":
+        e_low, e_high = (float(x) for x in args.pair.split(","))
+        s = effort_gap(_store(args), args.run, e_low, e_high, forecast=args.forecast)
+        if args.forecast:
+            print(f"forecast: {s.n_rows} traces · ~{s.forecast['prefill_tokens']:,} prefill tok "
+                  f"· ~${s.est_cost_usd or 0:.3f} discount · ~${s.forecast['usd_list'] or 0:.3f} list")
+            return 0
+        print(f"{s.run_id} effort {s.e_low}→{s.e_high}: {s.n_rows} traces · "
+              f"mean gap {s.mean_gap_nats:+.1f} nats · ~${s.est_cost_usd or 0:.4f}")
         return 0
 
     return 1
