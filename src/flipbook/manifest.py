@@ -7,7 +7,6 @@ consistent, and the same question under a different prompt template
 gets a different id.
 """
 
-from __future__ import annotations
 
 import hashlib
 import json
@@ -62,7 +61,7 @@ class Manifest:
     rows: list[dict]
 
     @classmethod
-    def freeze(cls, benchmarks: dict[str, int], seed: int, name: str) -> Manifest:
+    def freeze(cls, benchmarks: dict[str, int], seed: int, name: str) -> "Manifest":
         rows: list[dict] = []
         for bench, n in benchmarks.items():
             if bench not in _BUILDERS:
@@ -94,7 +93,7 @@ class Manifest:
         )
 
     @classmethod
-    def import_v1(cls, path: str | Path, name: str | None = None) -> Manifest:
+    def import_v1(cls, path: str | Path, name: str | None = None) -> "Manifest":
         """Re-key a legacy manifest's rows; the old row_id moves to
         source_ids.legacy_row_id so old runs stay joinable."""
         doc = json.loads(Path(path).read_text())
@@ -128,7 +127,7 @@ class Manifest:
         )
 
     @classmethod
-    def load(cls, store: Any, name_or_hash: str) -> Manifest:
+    def load(cls, store: Any, name_or_hash: str) -> "Manifest":
         doc = store.manifest_doc(name_or_hash)
         if doc is None:
             raise KeyError(f"no manifest {name_or_hash!r}")

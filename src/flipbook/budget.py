@@ -1,7 +1,6 @@
 """Per-run token and cost distribution - sizing tool for `max_tokens`.
 """
 
-from __future__ import annotations
 
 from dataclasses import dataclass
 

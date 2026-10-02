@@ -4,7 +4,6 @@ A row counts only when both runs have k non-error samples, and every
 excluded row is named with a reason. 
 """
 
-from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 

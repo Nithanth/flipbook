@@ -11,7 +11,6 @@ lowest-idx clean sample, and 4 calls score (P+t under base, P+t under ckpt,
 P+eom under base, P+eom under ckpt) — all prefill-priced.
 """
 
-from __future__ import annotations
 
 import asyncio
 import math

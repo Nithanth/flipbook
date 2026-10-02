@@ -7,7 +7,6 @@ prefix stopped mattering. This measures the prefix effect, which is the
 deployed effort mechanism.
 """
 
-from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
