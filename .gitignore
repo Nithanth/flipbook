@@ -5,3 +5,5 @@ __pycache__/
 .ruff_cache/
 .env
 .DS_Store
+data/
+runs_sft/
