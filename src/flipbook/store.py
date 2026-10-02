@@ -1,5 +1,6 @@
 """On-disk store: Parquet files deduped with idempotency + DuckDB engine for reads
 
+Writes are tmp+rename atomic, a reader sees old or new, never torn.
 """
 
 from __future__ import annotations
@@ -44,6 +45,42 @@ SAMPLES = pa.schema(
     ]
 )
 
+DIVERGENCE = pa.schema(
+    [
+        ("base_run_id", pa.string()),
+        ("ckpt_run_id", pa.string()),
+        ("row_id", pa.string()),
+        ("sample_idx", pa.int32()),
+        ("prompt_len", pa.int32()),
+        ("n", pa.int32()),
+        ("lp_base", pa.list_(pa.float32())),
+        ("lp_ckpt", pa.list_(pa.float32())),
+        ("delta", pa.list_(pa.float32())),
+        ("sum_nats", pa.float64()),
+        ("mean_nats", pa.float64()),
+        ("divergence_pos", pa.int32()),  # null if the -tau cumsum never crossed
+        ("win_argmin", pa.int32()),  # argmin of windowed mean
+        ("p_skip_base", pa.float64()),
+        ("p_skip_ckpt", pa.float64()),
+        ("cost_usd", pa.float64()),
+    ]
+)
+
+EFFORT = pa.schema(
+    [
+        ("run_id", pa.string()),
+        ("row_id", pa.string()),
+        ("sample_idx", pa.int32()),
+        ("e_low", pa.float64()),
+        ("e_high", pa.float64()),
+        ("lp_low_sum", pa.float64()),
+        ("lp_high_sum", pa.float64()),
+        ("gap_nats", pa.float64()),
+        ("n", pa.int32()),
+        ("cost_usd", pa.float64()),
+    ]
+)
+
 
 class Store:
     def __init__(self, path: str | Path):
@@ -57,7 +94,7 @@ class Store:
     def put_manifest(self, doc: dict, rows: list[dict]) -> None:
         h = doc["manifest_hash"]
         if (self.path / "manifests" / f"{h}.json").exists():
-            return
+            return  # same hash = same manifest
         _write_json(doc, self._dir("manifests") / f"{h}.json")
         tbl = pa.Table.from_pylist(
             [
@@ -90,7 +127,7 @@ class Store:
         for r in rows:
             r["messages"] = json.loads(r["messages"])
             r["source_ids"] = json.loads(r["source_ids"])
-            del r["manifest_hash"]
+            del r["manifest_hash"]  # keep rows row-shaped for re-freezing
         return rows
 
     def put_run(self, run: dict) -> None:
@@ -103,15 +140,27 @@ class Store:
         return [r for r in runs if study is None or r.get("study") == study]
 
     def put_samples(self, run_id: str, rows: list[dict]) -> None:
-        tbl = pa.Table.from_pylist(rows, schema=SAMPLES)
-        f = self._dir("samples") / f"{run_id}.parquet"
-        if f.exists():
-            tbl = _dedupe(pa.concat_tables([pq.read_table(f), tbl]))
-        _write_parquet(tbl, f)
+        _merge_write(self._dir("samples") / f"{run_id}.parquet", SAMPLES, rows, ("row_id", "sample_idx"))
 
     def samples(self, run_id: str) -> pa.Table:
         f = self.path / "samples" / f"{run_id}.parquet"
         return pq.read_table(f) if f.exists() else SAMPLES.empty_table()
+
+    def put_divergence(self, base_run_id: str, ckpt_run_id: str, rows: list[dict]) -> None:
+        f = self._dir("divergence") / f"{base_run_id}__{ckpt_run_id}.parquet"
+        _merge_write(f, DIVERGENCE, rows, ("row_id", "sample_idx"))
+
+    def divergence(self, base_run_id: str, ckpt_run_id: str) -> pa.Table:
+        f = self.path / "divergence" / f"{base_run_id}__{ckpt_run_id}.parquet"
+        return pq.read_table(f) if f.exists() else DIVERGENCE.empty_table()
+
+    def put_effort(self, run_id: str, e_low: float, e_high: float, rows: list[dict]) -> None:
+        f = self._dir("effort") / f"{run_id}__{e_low}_{e_high}.parquet"
+        _merge_write(f, EFFORT, rows, ("row_id", "sample_idx"))
+
+    def effort(self, run_id: str, e_low: float, e_high: float) -> pa.Table:
+        f = self.path / "effort" / f"{run_id}__{e_low}_{e_high}.parquet"
+        return pq.read_table(f) if f.exists() else EFFORT.empty_table()
 
     def has(self, run_id: str, row_id: str, sample_idx: int) -> bool:
         f = self.path / "samples" / f"{run_id}.parquet"
@@ -127,6 +176,13 @@ class Store:
         return duckdb.execute(sql, params).to_arrow_table()
 
 
+def _merge_write(f: Path, schema: pa.Schema, rows: list[dict], key: tuple[str, ...]) -> None:
+    tbl = pa.Table.from_pylist(rows, schema=schema)
+    if f.exists():
+        tbl = _dedupe(pa.concat_tables([pq.read_table(f), tbl], promote_options="default"), key)
+    _write_parquet(tbl, f)
+
+
 def _write_parquet(tbl: pa.Table, path: Path) -> None:
     tmp = path.parent / (path.name + ".tmp")
     pq.write_table(tbl, tmp)
@@ -139,10 +195,12 @@ def _write_json(doc: dict, path: Path) -> None:
     os.replace(tmp, path)
 
 
-def _dedupe(tbl: pa.Table) -> pa.Table:
+def _dedupe(tbl: pa.Table, key: tuple[str, ...]) -> pa.Table:
+    # stored rows are never overwritten by a rewrite
+    cols = [tbl[k].to_pylist() for k in key]
     seen, keep = set(), []
-    for i, (rid, s) in enumerate(zip(tbl["row_id"].to_pylist(), tbl["sample_idx"].to_pylist())):
-        if (rid, s) not in seen:
-            seen.add((rid, s))
+    for i, ks in enumerate(zip(*cols)):
+        if ks not in seen:
+            seen.add(ks)
             keep.append(i)
     return tbl.take(pa.array(keep))
