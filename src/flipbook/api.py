@@ -28,6 +28,14 @@ def _rows(table: pa.Table, drop: set[str] | None = None) -> list[dict]:
     return json.loads(json.dumps(out, default=str))
 
 
+def _norm_run(r: dict) -> dict:
+    # evaluator stamps provenance.train_step_measured; lift it so consumers
+    # can sort/group on a single field
+    if r.get("train_step") is None:
+        r["train_step"] = (r.get("provenance") or {}).get("train_step_measured")
+    return r
+
+
 def create_app(store_path: str | Path) -> FastAPI:
     store = Store(str(store_path))
     app = FastAPI(title="flipbook", docs_url="/api/docs")
@@ -49,7 +57,7 @@ def create_app(store_path: str | Path) -> FastAPI:
 
     @app.get("/api/runs")
     def runs(study: str | None = None) -> list[dict]:
-        return json.loads(json.dumps(store.runs(study), default=str))
+        return json.loads(json.dumps([_norm_run(r) for r in store.runs(study)], default=str))
 
     @app.get("/api/runs/{run_id}/samples")
     def samples(run_id: str, full: bool = False) -> list[dict]:
@@ -116,8 +124,37 @@ def create_app(store_path: str | Path) -> FastAPI:
 
     @app.get("/api/studies")
     def studies() -> list[str]:
+        # WHY union: a study with runs but no imported metrics.jsonl still exists
         d = store.path / "training_metrics"
-        return sorted(f.stem for f in d.glob("*.parquet")) if d.exists() else []
+        names = {f.stem for f in d.glob("*.parquet")} if d.exists() else set()
+        names |= {r["study"] for r in store.runs() if r.get("study")}
+        return sorted(names)
+
+    @app.get("/api/studies/{name}")
+    def study_detail(name: str) -> dict:
+        sruns = sorted(
+            (_norm_run(r) for r in store.runs(name)),
+            key=lambda r: r.get("train_step") if r.get("train_step") is not None else -1,
+        )
+        if not sruns:
+            raise HTTPException(404, f"no study {name}")
+        metrics: dict[str, list[dict]] = {}
+        if (store.path / "training_metrics" / f"{name}.parquet").exists():
+            for r in _rows(store.training_metrics(name)):
+                metrics.setdefault(r["key"], []).append({"step": r["step"], "value": r["value"]})
+        effort = {}
+        d = store.path / "effort"
+        if d.exists():
+            for f in sorted(d.glob("*.parquet")):
+                run, e = f.stem.split("__")
+                lo, hi = (float(x) for x in e.split("_"))
+                t = store.effort(run, lo, hi)
+                if t.num_rows:
+                    gaps = [g for g in t.column("gap_nats").to_pylist() if g is not None]
+                    if gaps:
+                        effort[run] = sum(gaps) / len(gaps)
+        return {"study": name, "runs": json.loads(json.dumps(sruns, default=str)),
+                "metrics": metrics, "effort_gap": effort}
 
     @app.get("/api/budget/{run_id}")
     def run_budget(run_id: str) -> dict:

@@ -1,22 +1,26 @@
 import { useEffect, useState } from "react";
 import { api, type PairReport, type Run } from "../api";
 
+function hashParams(): URLSearchParams {
+  return new URLSearchParams(window.location.hash.split("?")[1] ?? "");
+}
+
 export default function Compare() {
   const [runs, setRuns] = useState<Run[]>([]);
-  const [a, setA] = useState("");
-  const [b, setB] = useState("");
+  const [a, setA] = useState(hashParams().get("a") ?? "");
+  const [b, setB] = useState(hashParams().get("b") ?? "");
   const [pair, setPair] = useState<PairReport | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     api.runs().then((rs) => {
       setRuns(rs);
-      if (rs.length >= 2) {
+      if (rs.length >= 2 && (!a || !b)) {
         // default: baseline vs latest checkpoint on the most-populated manifest
         const step = (r: Run) =>
           (r.provenance?.train_step_measured as number) ??
-          (r as Record<string, number>).train_step ??
-          (r.label === "base" ? 0 : 1e9);
+          r.train_step ??
+          (r.label === "base" || r.label === "baseline" ? 0 : 1e9);
         const byManifest = new Map<string, Run[]>();
         for (const r of rs) {
           const k = r.manifest_hash ?? "";
@@ -24,8 +28,8 @@ export default function Compare() {
         }
         const group = [...byManifest.values()].sort((x, y) => y.length - x.length)[0];
         const sorted = group.sort((x, y) => step(x) - step(y));
-        setA(sorted[0].run_id);
-        setB(sorted[sorted.length - 1].run_id);
+        if (!a) setA(sorted[0].run_id);
+        if (!b) setB(sorted[sorted.length - 1].run_id);
       }
     });
   }, []);
@@ -61,14 +65,23 @@ function RunPicker({
   value: string;
   onChange: (v: string) => void;
 }) {
+  // group by study so cross-study pairs are a deliberate choice, not the default mess
+  const studies = [...new Set(runs.map((r) => r.study ?? "ungrouped"))].sort();
   return (
     <label>
       {label}{" "}
       <select value={value} onChange={(e) => onChange(e.target.value)}>
-        {runs.map((r) => (
-          <option key={r.run_id} value={r.run_id}>
-            {r.run_id.slice(0, 12)} {r.label ? `· ${r.label}` : ""}
-          </option>
+        {studies.map((s) => (
+          <optgroup key={s} label={s}>
+            {runs
+              .filter((r) => (r.study ?? "ungrouped") === s)
+              .sort((x, y) => (x.train_step ?? -1) - (y.train_step ?? -1))
+              .map((r) => (
+                <option key={r.run_id} value={r.run_id}>
+                  {r.label ?? r.run_id.slice(0, 12)} · {r.run_id.slice(0, 8)}
+                </option>
+              ))}
+          </optgroup>
         ))}
       </select>
     </label>
@@ -142,7 +155,11 @@ function Report({ pair }: { pair: PairReport }) {
             <tbody>
               {pair.flips.map((f) => (
                 <tr key={f.row_id} className={f.kind}>
-                  <td className="mono">{f.row_id}</td>
+                  <td className="mono">
+                    <a href={`#/divergence?base=${pair.run_a}&ckpt=${pair.run_b}`}>
+                      {f.row_id}
+                    </a>
+                  </td>
                   <td>{f.p_a.toFixed(2)}</td>
                   <td>{f.p_b.toFixed(2)}</td>
                   <td>

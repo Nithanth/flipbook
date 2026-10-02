@@ -7,8 +7,16 @@ export interface Run {
   k?: number;
   label?: string | null;
   study?: string | null;
+  train_step?: number | null;
   provenance?: Record<string, unknown>;
   [k: string]: unknown;
+}
+
+export interface StudyDetail {
+  study: string;
+  runs: Run[];
+  metrics: Record<string, { step: number; value: number }[]>;
+  effort_gap: Record<string, number>;
 }
 
 export interface Manifest {
@@ -99,5 +107,6 @@ export const api = {
     get<DivergenceRow[]>(`/api/divergence?base=${base}&ckpt=${ckpt}`),
   divergencePairs: () => get<{ base: string; ckpt: string }[]>("/api/divergence/pairs"),
   studies: () => get<string[]>("/api/studies"),
+  study: (name: string) => get<StudyDetail>(`/api/studies/${name}`),
   metrics: (study: string) => get<MetricRow[]>(`/api/metrics?study=${study}`),
 };

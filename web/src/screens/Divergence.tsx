@@ -8,14 +8,17 @@ interface Pair {
 
 export default function Divergence() {
   const [pairs, setPairs] = useState<Pair[]>([]);
-  const [sel, setSel] = useState("");
+  const q = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
+  const initial =
+    q.get("base") && q.get("ckpt") ? `${q.get("base")}__${q.get("ckpt")}` : "";
+  const [sel, setSel] = useState(initial);
   const [rows, setRows] = useState<DivergenceRow[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     api.divergencePairs().then((ps) => {
       setPairs(ps);
-      if (ps.length) setSel(`${ps[0].base}__${ps[0].ckpt}`);
+      if (ps.length && !sel) setSel(`${ps[0].base}__${ps[0].ckpt}`);
     });
   }, []);
 

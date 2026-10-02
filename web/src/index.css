@@ -59,6 +59,27 @@ tr.gain td { color: #57ab5a; }
 .spark { display: block; }
 .chart { background: #1c1f26; border: 1px solid #2a2e36; border-radius: 8px; }
 
+.hero { margin: 12px 0 8px; }
+.legend { display: flex; gap: 18px; font-size: 12px; margin-top: 6px; }
+
+.strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin: 16px 0 8px;
+}
+.mini {
+  background: #1c1f26;
+  border: 1px solid #2a2e36;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.mini-label { color: #8a919c; font-size: 11px; margin-bottom: 4px; }
+.mini-val { font-size: 13px; margin-top: 2px; }
+
+td a { color: #4b8be5; text-decoration: none; }
+h2 a.sub { font-weight: 400; font-size: 12px; }
+
 @media (max-width: 640px) {
   .cards { grid-template-columns: 1fr 1fr; }
   .chart, .spark { max-width: 100%; }

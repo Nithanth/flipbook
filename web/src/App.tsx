@@ -4,12 +4,12 @@ import Compare from "./screens/Compare";
 import Divergence from "./screens/Divergence";
 import Study from "./screens/Study";
 
-const ROUTES = ["runs", "compare", "divergence", "study"] as const;
+const ROUTES = ["study", "runs", "compare", "divergence"] as const;
 type Route = (typeof ROUTES)[number];
 
 function routeFromHash(): Route {
   const r = window.location.hash.replace(/^#\/?/, "").split("?")[0];
-  return (ROUTES as readonly string[]).includes(r) ? (r as Route) : "runs";
+  return (ROUTES as readonly string[]).includes(r) ? (r as Route) : "study";
 }
 
 export default function App() {
