@@ -1,0 +1,102 @@
+from fastapi.testclient import TestClient
+
+from flipbook.api import create_app
+from flipbook.store import Store
+
+
+def _store(tmp_path) -> Store:
+    store = Store(tmp_path)
+    store.put_manifest(
+        {"manifest_hash": "mh1", "name": "m", "version": "manifest/v2"},
+        [
+            {
+                "row_id": f"r{i}", "benchmark": "b",
+                "messages": [{"role": "user", "content": "q"}],
+                "answer": "1", "grader": "g", "source_ids": {},
+            }
+            for i in range(4)
+        ],
+    )
+    for rid, vs in (("a", [1, 1, 0, 1]), ("b", [0, 1, 0, 0])):
+        store.put_run({"run_id": rid, "k": 1})
+        store.put_samples(rid, [
+            {
+                "run_id": rid, "row_id": f"r{i}", "sample_idx": 0,
+                "text": "t", "prompt_tokens": 10, "gen_tokens": 50,
+                "stop_reason": "stop", "verdict": float(v),
+                "extracted": "x" if v else None,
+                "failure_kind": None if v else "wrong_answer",
+                "error": None, "est_cost_usd": 0.001,
+            }
+            for i, v in enumerate(vs)
+        ])
+    store.put_divergence("a", "b", [
+        {
+            "row_id": "r0", "sample_idx": 0, "lp_base": [-0.1], "lp_ckpt": [-0.9],
+            "delta": [-0.8], "sum_nats": -0.8, "mean_nats": -0.8,
+            "divergence_pos": 0, "win_argmin": 0,
+            "p_skip_base": 0.01, "p_skip_ckpt": 0.4, "cost_usd": 0.01,
+        }
+    ])
+    store.put_effort("a", 0.2, 0.9, [
+        {
+            "run_id": "a", "row_id": "r0", "sample_idx": 0,
+            "e_low": 0.2, "e_high": 0.9, "lp_low_sum": -50.0,
+            "lp_high_sum": -30.0, "gap_nats": 20.0, "n": 100,
+            "cost_usd": 0.01,
+        }
+    ])
+    store.put_training_metrics("s1", [{"step": 8, "key": "loss", "value": 0.5}])
+    return store
+
+
+def _client(tmp_path) -> TestClient:
+    return TestClient(create_app(tmp_path))
+
+
+def test_manifests_and_runs(tmp_path):
+    _store(tmp_path)
+    c = _client(tmp_path)
+    ms = c.get("/api/manifests").json()
+    assert ms[0]["manifest_hash"] == "mh1" and ms[0]["n_rows"] == 4
+    runs = c.get("/api/runs").json()
+    assert {r["run_id"] for r in runs} == {"a", "b"}
+
+
+def test_samples_strips_heavy_cols(tmp_path):
+    _store(tmp_path)
+    c = _client(tmp_path)
+    rows = c.get("/api/runs/a/samples").json()
+    assert len(rows) == 4 and "verdict" in rows[0]
+    assert "token_ids" not in rows[0] and "messages" not in rows[0]
+    assert c.get("/api/runs/ghost/samples").status_code == 404
+
+
+def test_compare_endpoint(tmp_path):
+    _store(tmp_path)
+    c = _client(tmp_path)
+    p = c.get("/api/compare", params={"a": "a", "b": "b"}).json()
+    assert p["n_pairs"] == 4 and p["acc_a"] == 0.75 and p["acc_b"] == 0.25
+    assert p["agreement"]["a_only"] == 2
+
+
+def test_divergence_and_effort(tmp_path):
+    _store(tmp_path)
+    c = _client(tmp_path)
+    d = c.get("/api/divergence", params={"base": "a", "ckpt": "b"}).json()
+    assert d[0]["sum_nats"] == -0.8
+    e = c.get("/api/effort", params={"run": "a", "pair": "0.2,0.9"}).json()
+    assert e[0]["gap_nats"] == 20.0
+    assert c.get("/api/divergence", params={"base": "a", "ckpt": "x"}).status_code == 404
+    assert c.get("/api/effort", params={"run": "a", "pair": "bad"}).status_code == 400
+
+
+def test_metrics_and_budget(tmp_path):
+    _store(tmp_path)
+    c = _client(tmp_path)
+    assert c.get("/api/studies").json() == ["s1"]
+    m = c.get("/api/metrics", params={"study": "s1"}).json()
+    assert m[0]["key"] == "loss" and m[0]["value"] == 0.5
+    b = c.get("/api/budget/a").json()
+    assert b["n_samples"] == 4 and b["gen_p50"] == 50.0
+    assert c.get("/api/metrics", params={"study": "nope"}).status_code == 404

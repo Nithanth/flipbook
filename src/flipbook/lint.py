@@ -1,8 +1,5 @@
 """Pure config checks that catch silently-wrong evals before they cost money.
 
-No sampling, no clients, no network. `base_model` is the resolved model name;
-when the caller only has a `tinker://` path and can't resolve it, Inkling
-checks degrade gracefully instead of lying.
 """
 
 

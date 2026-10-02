@@ -144,6 +144,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("log_dir")
     p.add_argument("--study", required=True)
     _add_store(p)
+    p = sub.add_parser("serve", help="read-only API + GUI over the store")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8484)
+    _add_store(p)
     args = ap.parse_args(argv)
     if args.cmd == "freeze":
         benches = {b: int(n) for b, n in (x.rsplit(":", 1) for x in args.benchmark)}
@@ -292,6 +296,11 @@ def main(argv: list[str] | None = None) -> int:
         from flipbook.import_metrics import import_metrics
         n = import_metrics(_store(args), args.log_dir, args.study)
         print(f"imported {n} metric rows for study {args.study}")
+        return 0
+    if args.cmd == "serve":
+        from flipbook.api import serve
+        print(f"serving {args.store} at http://{args.host}:{args.port}")
+        serve(args.store, host=args.host, port=args.port)
         return 0
     return 1
 
