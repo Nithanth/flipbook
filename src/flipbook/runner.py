@@ -240,44 +240,41 @@ async def evaluate_async(
             return []
         toks = prompt_ints[row["row_id"]]
         async with sem:
-            try:
-                # one call per row, returned sequences fill the missing idxs in order
-                resp = await client.sample_async(
-                    ModelInput.from_ints(toks),
-                    num_samples=len(missing),
-                    sampling_params=SamplingParams(
-                        max_tokens=cfg.max_tokens,
-                        temperature=cfg.temperature,
-                        stop=renderer.get_stop_sequences(),
-                        seed=cfg.seed,
-                    ),
-                )
-            except Exception as e:  # noqa: BLE001 — a failed cell is recorded, not fatal
-                return [
-                    {
+            # WHY: SamplingParams.seed binds the whole request — num_samples=k
+            # under one seed returns identical draws. Per-sample calls keep k
+            # independent AND resumable (idx i always draws with seed+i).
+            async def one(i: int) -> dict:
+                try:
+                    resp = await client.sample_async(
+                        ModelInput.from_ints(toks),
+                        num_samples=1,
+                        sampling_params=SamplingParams(
+                            max_tokens=cfg.max_tokens,
+                            temperature=cfg.temperature,
+                            stop=renderer.get_stop_sequences(),
+                            seed=cfg.seed + i,
+                        ),
+                    )
+                except Exception as e:  # noqa: BLE001 — a failed cell is recorded, not fatal
+                    return {
                         "run_id": rid, "row_id": row["row_id"], "sample_idx": i,
                         "prompt_tokens": len(toks), "error": f"{type(e).__name__}: {e}",
                         "failure_kind": "error",
                     }
-                    for i in missing
-                ]
-        out = []
-        for i, seq in zip(missing, resp.sequences):
-            msg, _term = renderer.parse_response(seq.tokens)
-            text = get_text_content(msg)
-            try:
-                g = grade(row["grader_id"], text, row["gold"])
-                verdict, extracted, note = g.verdict, g.extracted, g.note
-            except Exception as ge:  # noqa: BLE001 — a grader crash is a wrong answer
-                verdict, extracted, note = 0.0, None, f"grader_error: {type(ge).__name__}: {ge}"
-            est = None
-            if resolved.base_model in PRICES:
-                # prefill is billed once per call; amortize over its samples
-                est = estimate_usd(resolved.base_model, "prefill", len(toks) // len(missing)) + estimate_usd(
-                    resolved.base_model, "sample", len(seq.tokens)
-                )
-            out.append(
-                {
+                seq = resp.sequences[0]
+                msg, _term = renderer.parse_response(seq.tokens)
+                text = get_text_content(msg)
+                try:
+                    g = grade(row["grader_id"], text, row["gold"])
+                    verdict, extracted, note = g.verdict, g.extracted, g.note
+                except Exception as ge:  # noqa: BLE001 — a grader crash is a wrong answer
+                    verdict, extracted, note = 0.0, None, f"grader_error: {type(ge).__name__}: {ge}"
+                est = None
+                if resolved.base_model in PRICES:
+                    est = estimate_usd(resolved.base_model, "prefill", len(toks)) + estimate_usd(
+                        resolved.base_model, "sample", len(seq.tokens)
+                    )
+                return {
                     "run_id": rid, "row_id": row["row_id"], "sample_idx": i,
                     "text": text, "prompt_tokens": len(toks), "gen_tokens": len(seq.tokens),
                     "stop_reason": seq.stop_reason, "verdict": verdict,
@@ -285,8 +282,8 @@ async def evaluate_async(
                     "grade_note": note, "error": None, "est_cost_usd": est,
                     "token_ids": list(seq.tokens), "token_logprobs": list(seq.logprobs) if seq.logprobs else None,
                 }
-            )
-        return out
+
+            return await asyncio.gather(*(one(i) for i in missing))
 
     new_rows = []
     for done_n, coro in enumerate(asyncio.as_completed([work(r) for r in rows]), start=1):
