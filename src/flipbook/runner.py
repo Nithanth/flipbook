@@ -80,7 +80,7 @@ async def resolve_model(
     if service_client is None and base_model is None:
         raise ValueError("tinker:// model needs API access to resolve its base model")
     if service_client is not None:
-        # renderer precedence: explicit > checkpoint metadata > model default
+        #  explicit > checkpoint metadata > model default
         rest = service_client.create_rest_client()
         run = await rest.get_training_run_by_tinker_path_async(model)
         if base_model is not None and base_model != run.base_model:
@@ -105,7 +105,7 @@ def _prompt_ints(renderer, renderer_name: str, messages: list[dict], effort: flo
 
 
 def _failure_kind(verdict: float, extracted: str | None, stop_reason: str) -> str | None:
-    # precedence: a correct answer is never a failure; truncation only counts
+    # precedence: a correct answer is never a failure, truncation only counts
     # when it caused the failure
     if verdict == 1.0:
         return None
@@ -156,10 +156,34 @@ async def evaluate_async(
     rows = manifest.rows
     rid = run_id(cfg)
 
+    # resume bookkeeping before any client or tokenizer exists
+    have: dict[str, set[int]] = {}
+    for s in store.samples(rid).to_pylist():
+        have.setdefault(s["row_id"], set()).add(s["sample_idx"])
+    todo = {
+        r["row_id"]: [i for i in range(cfg.k) if i not in have.get(r["row_id"], set())]
+        for r in rows
+    }
+    cells = sum(len(v) for v in todo.values())
+
+    if cells == 0 and not forecast:
+        done = store.samples(rid).to_pylist()
+        ok = [s for s in done if s["verdict"] is not None]
+        return RunSummary(
+            run_id=rid,
+            manifest_hash=manifest.manifest_hash,
+            n_rows=len(rows),
+            n_new_samples=0,
+            n_errors=sum(1 for s in done if s["failure_kind"] == "error"),
+            pass1=sum(s["verdict"] for s in ok) / len(ok) if ok else None,
+            est_cost_usd=sum(s["est_cost_usd"] or 0 for s in done) or None,
+        )
+
+    # sampling needs a service client, forecast on a plain model name stays fully offline
     sc = tinker.ServiceClient() if (not forecast or cfg.model.startswith("tinker://")) else None
     resolved = await resolve_model(cfg.model, cfg.renderer, service_client=sc)
 
-    # lint before any paid client exists; errors abort the eval
+    # lint before any paid client exists
     findings = lint(cfg, resolved.base_model)
     errors = [f for f in findings if f.level == "error"]
     if errors:
@@ -170,16 +194,6 @@ async def evaluate_async(
         r["row_id"]: _prompt_ints(renderer, cfg.renderer, r["messages"], cfg.effort)
         for r in rows
     }
-
-    # resume bookkeeping: which (row, sample_idx) slots the store already has
-    have: dict[str, set[int]] = {}
-    for s in store.samples(rid).to_pylist():
-        have.setdefault(s["row_id"], set()).add(s["sample_idx"])
-    todo = {
-        r["row_id"]: [i for i in range(cfg.k) if i not in have.get(r["row_id"], set())]
-        for r in rows
-    }
-    cells = sum(len(v) for v in todo.values())
     tot_in = sum(len(prompt_ints[r]) for r, miss in todo.items() if miss)
 
     if forecast:
@@ -227,7 +241,7 @@ async def evaluate_async(
         toks = prompt_ints[row["row_id"]]
         async with sem:
             try:
-                # one call per row; returned sequences fill the missing idxs in order
+                # one call per row, returned sequences fill the missing idxs in order
                 resp = await client.sample_async(
                     ModelInput.from_ints(toks),
                     num_samples=len(missing),
