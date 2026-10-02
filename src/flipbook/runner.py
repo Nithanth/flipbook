@@ -1,9 +1,9 @@
 """Run one RunConfig over a manifest: sample k per row, grade, persist.
+
 Identity comes from config_fp — a rerun dedupes at (run_id, row_id,
 sample_idx), so a crashed eval resumes by sampling only missing indices.
 `forecast=True` does everything except create the sampling client.
 """
-
 
 import asyncio
 import importlib.metadata
@@ -69,9 +69,12 @@ async def resolve_model(
 ) -> Resolved:
     """tinker:// paths resolve base model + renderer via free REST metadata."""
     from tinker_cookbook import model_info
+
     if not model.startswith("tinker://"):
         return Resolved(model, renderer or model_info.get_recommended_renderer_name(model), None)
+
     from tinker_cookbook import checkpoint_utils
+
     if service_client is None and base_model is None:
         raise ValueError("tinker:// model needs API access to resolve its base model")
     if service_client is not None:
@@ -148,9 +151,11 @@ async def evaluate_async(
     from tinker.types import ModelInput, SamplingParams
     from tinker_cookbook.renderers import get_renderer, get_text_content
     from tinker_cookbook.tokenizer_utils import get_tokenizer
+
     manifest = Manifest.load(store, cfg.manifest_hash)
     rows = manifest.rows
     rid = run_id(cfg)
+
     # resume bookkeeping before any client or tokenizer exists
     have: dict[str, set[int]] = {}
     for s in store.samples(rid).to_pylist():
@@ -160,6 +165,7 @@ async def evaluate_async(
         for r in rows
     }
     cells = sum(len(v) for v in todo.values())
+
     if cells == 0 and not forecast:
         done = store.samples(rid).to_pylist()
         ok = [s for s in done if s["verdict"] is not None]
@@ -172,6 +178,7 @@ async def evaluate_async(
             pass1=sum(s["verdict"] for s in ok) / len(ok) if ok else None,
             est_cost_usd=sum(s["est_cost_usd"] or 0 for s in done) or None,
         )
+
     # ServiceClient resolves auth
     sc = None
     needs_rest = cfg.model.startswith("tinker://") and base_model is None
@@ -180,17 +187,20 @@ async def evaluate_async(
     resolved = await resolve_model(
         cfg.model, cfg.renderer, base_model=base_model, service_client=sc
     )
+
     # lint before any paid client exists
     findings = lint(cfg, resolved.base_model)
     errors = [f for f in findings if f.level == "error"]
     if errors:
         raise LintFailed(errors)
+
     renderer = get_renderer(resolved.renderer, get_tokenizer(resolved.base_model))
     prompt_ints = {
         r["row_id"]: _prompt_ints(renderer, resolved.renderer, r["messages"], cfg.effort)
         for r in rows
     }
     tot_in = sum(len(prompt_ints[r]) for r, miss in todo.items() if miss)
+
     if forecast:
         prior = _prior_gen_mean(store, manifest.manifest_hash, cfg.effort)
         est_gen = int(
@@ -221,23 +231,22 @@ async def evaluate_async(
                 usd_list=list_,
             ),
         )
-    # an injected client skips creating a new one;
-    # cfg.model still carries the path for identity and provenance
+
+    # an injected client skips creating a new one, cfg.model still carries the path for identity and provenance
     client = sampling_client or (
         sc.create_sampling_client(model_path=resolved.checkpoint_path)
         if resolved.checkpoint_path
         else sc.create_sampling_client(base_model=resolved.base_model)
     )
     sem = asyncio.Semaphore(concurrency)
+
     async def work(row: dict) -> list[dict]:
         missing = todo[row["row_id"]]
         if not missing:
             return []
         toks = prompt_ints[row["row_id"]]
         async with sem:
-            # WHY: SamplingParams.seed binds the whole request — num_samples=k
-            # under one seed returns identical draws. Per-sample calls keep k
-            # independent AND resumable (idx i always draws with seed+i).
+            # why per-sample calls-seed binds the whole request, so num_samples=k under one seed returns identical draws
             async def one(i: int) -> dict:
                 try:
                     resp = await client.sample_async(
@@ -277,13 +286,16 @@ async def evaluate_async(
                     "grade_note": note, "error": None, "est_cost_usd": est,
                     "token_ids": list(seq.tokens), "token_logprobs": list(seq.logprobs) if seq.logprobs else None,
                 }
+
             return await asyncio.gather(*(one(i) for i in missing))
+
     new_rows = []
     for done_n, coro in enumerate(asyncio.as_completed([work(r) for r in rows]), start=1):
         new_rows.extend(await coro)
         if done_n % 25 == 0 or done_n == len(rows):
             log(f"  {done_n}/{len(rows)} rows sampled")
     store.put_samples(rid, new_rows)
+
     cb_ver = importlib.metadata.version("tinker-cookbook")
     renderer_version = (
         f"tml-renderers=={importlib.metadata.version('tml-renderers')}"
@@ -311,6 +323,7 @@ async def evaluate_async(
             "provenance": {"evaluated_cells": cells},
         }
     )
+
     done = store.samples(rid).to_pylist()
     ok = [s for s in done if s["verdict"] is not None]
     return RunSummary(

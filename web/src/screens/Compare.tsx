@@ -1,0 +1,180 @@
+import { useEffect, useState } from "react";
+import { api, type PairReport, type Run } from "../api";
+
+export default function Compare() {
+  const [runs, setRuns] = useState<Run[]>([]);
+  const [a, setA] = useState("");
+  const [b, setB] = useState("");
+  const [pair, setPair] = useState<PairReport | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.runs().then((rs) => {
+      setRuns(rs);
+      if (rs.length >= 2) {
+        // default: baseline vs latest checkpoint on the most-populated manifest
+        const step = (r: Run) =>
+          (r.provenance?.train_step_measured as number) ??
+          (r as Record<string, number>).train_step ??
+          (r.label === "base" ? 0 : 1e9);
+        const byManifest = new Map<string, Run[]>();
+        for (const r of rs) {
+          const k = r.manifest_hash ?? "";
+          byManifest.set(k, [...(byManifest.get(k) ?? []), r]);
+        }
+        const group = [...byManifest.values()].sort((x, y) => y.length - x.length)[0];
+        const sorted = group.sort((x, y) => step(x) - step(y));
+        setA(sorted[0].run_id);
+        setB(sorted[sorted.length - 1].run_id);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!a || !b || a === b) return;
+    setPair(null);
+    setErr(null);
+    api.compare(a, b).then(setPair).catch((e) => setErr(String(e)));
+  }, [a, b]);
+
+  return (
+    <>
+      <h1>compare</h1>
+      <div className="row">
+        <RunPicker label="base" runs={runs} value={a} onChange={setA} />
+        <RunPicker label="ckpt" runs={runs} value={b} onChange={setB} />
+      </div>
+      {err && <p className="err">{err}</p>}
+      {pair && <Report pair={pair} />}
+    </>
+  );
+}
+
+function RunPicker({
+  label,
+  runs,
+  value,
+  onChange,
+}: {
+  label: string;
+  runs: Run[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <label>
+      {label}{" "}
+      <select value={value} onChange={(e) => onChange(e.target.value)}>
+        {runs.map((r) => (
+          <option key={r.run_id} value={r.run_id}>
+            {r.run_id.slice(0, 12)} {r.label ? `· ${r.label}` : ""}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function Report({ pair }: { pair: PairReport }) {
+  const ag = pair.agreement;
+  return (
+    <>
+      <div className="cards">
+        <div className="card">
+          <div className="big">
+            {pct(pair.acc_a)} → {pct(pair.acc_b)}
+          </div>
+          <div className="sub">
+            Δ {pair.delta >= 0 ? "+" : ""}
+            {pair.delta.toFixed(3)} [{pair.delta_ci[0].toFixed(3)},{" "}
+            {pair.delta_ci[1].toFixed(3)}] · {pair.n_pairs} paired rows
+          </div>
+        </div>
+        <div className="card">
+          <div className="big">
+            {pair.flips.length} flips
+          </div>
+          <div className="sub">
+            {pair.flips.filter((f) => f.kind === "regression").length} regressions ·{" "}
+            {pair.flips.filter((f) => f.kind === "gain").length} gains
+          </div>
+        </div>
+        <div className="card">
+          <div className="big">
+            {pct(pair.truncation_rate_a)} → {pct(pair.truncation_rate_b)}
+          </div>
+          <div className="sub">truncation rate</div>
+        </div>
+        <div className="card">
+          <div className="big">
+            ${pair.cost_a.toFixed(2)} vs ${pair.cost_b.toFixed(2)}
+          </div>
+          <div className="sub">estimated cost</div>
+        </div>
+      </div>
+
+      <h2>agreement</h2>
+      <table className="agreement">
+        <tbody>
+          <tr>
+            <td>both right <b>{ag.both_right}</b></td>
+            <td>a only <b>{ag.a_only}</b></td>
+          </tr>
+          <tr>
+            <td>b only <b>{ag.b_only}</b></td>
+            <td>both wrong <b>{ag.both_wrong}</b></td>
+          </tr>
+        </tbody>
+      </table>
+
+      {pair.flips.length > 0 && (
+        <>
+          <h2>flips</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>row</th>
+                <th>p(base)</th>
+                <th>p(ckpt)</th>
+                <th>kind</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pair.flips.map((f) => (
+                <tr key={f.row_id} className={f.kind}>
+                  <td className="mono">{f.row_id}</td>
+                  <td>{f.p_a.toFixed(2)}</td>
+                  <td>{f.p_b.toFixed(2)}</td>
+                  <td>
+                    {f.kind}
+                    {f.hard ? " (hard)" : ""}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      {pair.excluded.length > 0 && (
+        <>
+          <h2>excluded ({pair.excluded.length})</h2>
+          <table>
+            <tbody>
+              {pair.excluded.map((e) => (
+                <tr key={e.row_id}>
+                  <td className="mono">{e.row_id}</td>
+                  <td>{e.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </>
+  );
+}
+
+function pct(x: number) {
+  return `${(x * 100).toFixed(1)}%`;
+}
