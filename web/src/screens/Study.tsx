@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type Run, type StudyDetail } from "../api";
+import Tip from "../Tip";
 
 /** Study dashboard: the whole story of one training run on one page. */
 export default function Study() {
@@ -167,56 +168,58 @@ function Hero({ d, runs }: { d: Derived; runs: Run[] }) {
   return (
     <div className="hero">
       <svg width={w} height={h} className="chart">
-        <line x1={pad} x2={w - pad} y1={h - pad} y2={h - pad} stroke="#444" />
-        <line x1={pad} x2={pad} y1={pad} y2={h - pad} stroke="#444" />
-        <line x1={w - pad} x2={w - pad} y1={pad} y2={h - pad} stroke="#333" />
+        <line x1={pad} x2={w - pad} y1={h - pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
+        <line x1={pad} x2={pad} y1={pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
+        <line x1={w - pad} x2={w - pad} y1={pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
         {lossPath && (
-          <path d={lossPath} fill="none" stroke="#7a7f8a" strokeWidth={1.2} strokeDasharray="4 3" />
+          <path d={lossPath} fill="none" style={{ stroke: "var(--accent2)" }} strokeWidth={1.4} strokeDasharray="4 3" />
         )}
-        <path d={passPath} fill="none" stroke="#4b8be5" strokeWidth={2} />
+        <path d={passPath} fill="none" style={{ stroke: "var(--accent)" }} strokeWidth={2} />
         {pts.map((r) => (
           <circle
             key={r.step}
             cx={sx(r.step)}
             cy={syPass(r.pass1!)}
             r={5}
-            fill="#4b8be5"
-            stroke="#0f1115"
+            style={{ fill: "var(--accent)", stroke: "var(--bg)", cursor: "pointer" }}
             strokeWidth={1.5}
-            style={{ cursor: "pointer" }}
             onClick={() => go(r.step)}
           >
             <title>{`step ${r.step}: pass1 ${(r.pass1! * 100).toFixed(1)}% — click to compare`}</title>
           </circle>
         ))}
-        <text x={6} y={pad} fill="#4b8be5" fontSize={11}>100%</text>
-        <text x={6} y={h - pad} fill="#4b8be5" fontSize={11}>0%</text>
-        <text x={w - pad + 6} y={pad} fill="#7a7f8a" fontSize={11}>{lossMax.toPrecision(2)}</text>
-        <text x={pad} y={h - 12} fill="#888" fontSize={11}>{x0}</text>
-        <text x={w - pad - 20} y={h - 12} fill="#888" fontSize={11}>{x1}</text>
+        <text x={6} y={pad} style={{ fill: "var(--accent)" }} fontSize={11}>100%</text>
+        <text x={6} y={h - pad} style={{ fill: "var(--accent)" }} fontSize={11}>0%</text>
+        <text x={w - pad + 6} y={pad} style={{ fill: "var(--accent2)" }} fontSize={11}>{lossMax.toPrecision(2)}</text>
+        <text x={pad} y={h - 12} style={{ fill: "var(--muted)" }} fontSize={11}>{x0}</text>
+        <text x={w - pad - 20} y={h - 12} style={{ fill: "var(--muted)" }} fontSize={11}>{x1}</text>
       </svg>
       <div className="legend">
-        <span style={{ color: "#4b8be5" }}>━ pass1 (click a point)</span>
-        <span style={{ color: "#7a7f8a" }}>┅ train_mean_nll</span>
+        <Tip text="Fraction of frozen eval questions answered correctly at this checkpoint (left axis). Click a point to compare that step against baseline.">
+          <span style={{ color: "var(--accent)" }}>━ pass1 (click a point)</span>
+        </Tip>
+        <Tip text="Training loss on the fine-tuning batches — what the optimizer sees (right axis). It can keep falling while eval behavior collapses; that's the collision this chart exists to show.">
+          <span style={{ color: "var(--accent2)" }}>┅ train_mean_nll</span>
+        </Tip>
       </div>
     </div>
   );
 }
 
 function MetricStrip({ d }: { d: Derived }) {
-  const cards: [string, (r: StepRow) => number | undefined, (v: number) => string][] = [
-    ["divergence (nats)", (r) => r.div, (v) => v.toFixed(0)],
-    ["mean gen tokens", (r) => r.genTok, (v) => v.toFixed(0)],
-    ["truncation", (r) => r.trunc, (v) => `${(v * 100).toFixed(0)}%`],
-    ["effort gap (nats)", (r) => r.effortGap, (v) => v.toFixed(0)],
-    ["p_skip", (r) => r.pSkip, (v) => v.toPrecision(2)],
-    ["eval cost", (r) => r.cost, (v) => `$${v.toFixed(2)}`],
+  const cards: [string, string, (r: StepRow) => number | undefined, (v: number) => string][] = [
+    ["divergence (nats)", "How far the checkpoint's token probabilities moved from base on the baseline's own reasoning traces. ~0 = unchanged policy; very negative = the internals shifted hard — often before accuracy shows it.", (r) => r.div, (v) => v.toFixed(0)],
+    ["mean gen tokens", "Average response length. A sudden drop or spike signals a degenerate output regime (rambling into the cap, or collapsing to short format-locked answers).", (r) => r.genTok, (v) => v.toFixed(0)],
+    ["truncation", "Fraction of samples that hit the max-token cap before finishing. High truncation = the model rambles and never emits a final answer.", (r) => r.trunc, (v) => `${(v * 100).toFixed(0)}%`],
+    ["effort gap (nats)", "Log-prob difference between effort=0.9 and effort=0.2 prompts on the same trace. Large = effort conditioning still modulates the model; ~0 = the dial is dead.", (r) => r.effortGap, (v) => v.toFixed(0)],
+    ["p_skip", "The model's own probability of ending the response immediately (end-of-message as the first token). Rising p_skip = it increasingly wants to emit nothing.", (r) => r.pSkip, (v) => v.toPrecision(2)],
+    ["eval cost", "Sampling cost of this eval point, in USD.", (r) => r.cost, (v) => `$${v.toFixed(2)}`],
   ];
   return (
     <div className="strip">
-      {cards.map(([label, get, fmt]) => (
+      {cards.map(([label, tip, get, fmt]) => (
         <div className="mini" key={label}>
-          <div className="mini-label">{label}</div>
+          <div className="mini-label"><Tip text={tip}>{label}</Tip></div>
           <TinySeries
             pts={d.rows.filter((r) => get(r) != null).map((r) => ({ x: r.step, y: get(r)! }))}
           />
@@ -243,9 +246,9 @@ function TinySeries({ pts }: { pts: { x: number; y: number }[] }) {
   const path = pts.map((p, i) => `${i ? "L" : "M"}${sx(p.x)},${sy(p.y)}`).join(" ");
   return (
     <svg width={w} height={h}>
-      <path d={path} fill="none" stroke="#8f9bb3" strokeWidth={1.4} />
+      <path d={path} fill="none" style={{ stroke: "var(--muted)" }} strokeWidth={1.4} />
       {pts.map((p) => (
-        <circle key={p.x} cx={sx(p.x)} cy={sy(p.y)} r={2} fill="#8f9bb3">
+        <circle key={p.x} cx={sx(p.x)} cy={sy(p.y)} r={2} style={{ fill: "var(--muted)" }}>
           <title>{`step ${p.x}: ${p.y}`}</title>
         </circle>
       ))}
@@ -265,14 +268,14 @@ function StepTable({ d, runs }: { d: Derived; runs: Run[] }) {
         <thead>
           <tr>
             <th>step</th>
-            <th>pass1</th>
-            <th>Δ vs base</th>
-            <th>flips</th>
-            <th>trunc</th>
-            <th>gen tok</th>
-            <th>div nats</th>
-            <th>effort gap</th>
-            <th>cost</th>
+            <th><Tip text="Accuracy on the frozen eval manifest at this checkpoint.">pass1</Tip></th>
+            <th><Tip text="Paired per-question accuracy change vs baseline, with a bootstrap 95% CI over questions. Deltas inside the noise band (~±0.07 at n=30, k=2) are inconclusive.">Δ vs base</Tip></th>
+            <th><Tip text="Questions that changed correctness vs baseline. R = right→wrong regressions, G = wrong→right gains. Noise flips are roughly symmetric; one-directional flips signal a real shift.">flips</Tip></th>
+            <th><Tip text="Fraction of samples truncated at the max-token cap.">trunc</Tip></th>
+            <th><Tip text="Average response length in tokens.">gen tok</Tip></th>
+            <th><Tip text="Mean per-token log-prob shift of the checkpoint vs base, scored on the baseline's own traces. ~0 = unchanged; very negative = large internal shift.">div nats</Tip></th>
+            <th><Tip text="Effort-conditioning gap in nats. Large = the effort dial still works; ~0 = conditioning collapsed.">effort gap</Tip></th>
+            <th><Tip text="Estimated sampling cost of this eval point." right>cost</Tip></th>
           </tr>
         </thead>
         <tbody>

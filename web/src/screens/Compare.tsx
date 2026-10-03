@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type PairReport, type Run } from "../api";
+import Tip from "../Tip";
 
 function hashParams(): URLSearchParams {
   return new URLSearchParams(window.location.hash.split("?")[1] ?? "");
@@ -98,9 +99,13 @@ function Report({ pair }: { pair: PairReport }) {
             {pct(pair.acc_a)} → {pct(pair.acc_b)}
           </div>
           <div className="sub">
-            Δ {pair.delta >= 0 ? "+" : ""}
-            {pair.delta.toFixed(3)} [{pair.delta_ci[0].toFixed(3)},{" "}
-            {pair.delta_ci[1].toFixed(3)}] · {pair.n_pairs} paired rows
+            <Tip text="Paired per-question accuracy change (b − a), with a bootstrap 95% CI over the shared eval questions. Pairing removes question-difficulty noise; a CI that crosses 0 is inconclusive.">
+              Δ {pair.delta >= 0 ? "+" : ""}
+              {pair.delta.toFixed(3)} [{pair.delta_ci[0].toFixed(3)},{" "}
+              {pair.delta_ci[1].toFixed(3)}]
+            </Tip>
+            {" · "}
+            {pair.n_pairs} paired rows
           </div>
         </div>
         <div className="card">
@@ -147,9 +152,9 @@ function Report({ pair }: { pair: PairReport }) {
             <thead>
               <tr>
                 <th>row</th>
-                <th>p(base)</th>
-                <th>p(ckpt)</th>
-                <th>kind</th>
+                <th><Tip text="Base model's pass rate on this question across its k samples.">p(base)</Tip></th>
+                <th><Tip text="Checkpoint's pass rate on this question across its k samples.">p(ckpt)</Tip></th>
+                <th><Tip text="regression = right→wrong, gain = wrong→right. (hard) = every sample flipped, not just a marginal one — the strongest evidence of a real change.">kind</Tip></th>
               </tr>
             </thead>
             <tbody>

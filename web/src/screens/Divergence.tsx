@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type DivergenceRow } from "../api";
+import Tip from "../Tip";
 
 interface Pair {
   base: string;
@@ -57,10 +58,10 @@ export default function Divergence() {
           <thead>
             <tr>
               <th>row</th>
-              <th>Σ nats</th>
-              <th>first div</th>
-              <th>p_skip</th>
-              <th>trace</th>
+              <th><Tip text="Total log-prob shift of the checkpoint vs base, summed over every token of the baseline's own trace. Negative = the checkpoint finds this trace less likely.">Σ nats</Tip></th>
+              <th><Tip text="Token position where the two models' per-token log-probs first diverge materially — roughly where the checkpoint starts reasoning differently.">first div</Tip></th>
+              <th><Tip text="Probability of ending the response at token 0 (emit nothing), base → checkpoint. A jump means the checkpoint wants to skip the question entirely.">p_skip</Tip></th>
+              <th><Tip text="Per-token log-prob delta along the baseline trace, compressed to a sparkline. Red bars = checkpoint less confident than base there; the amber tick marks first divergence.">trace</Tip></th>
             </tr>
           </thead>
           <tbody>
@@ -98,7 +99,7 @@ function Spark({ delta, mark }: { delta: number[]; mark: number | null }) {
   const bw = w / pts.length;
   return (
     <svg width={w} height={h} className="spark">
-      <line x1={0} x2={w} y1={h / 2} y2={h / 2} stroke="#444" />
+      <line x1={0} x2={w} y1={h / 2} y2={h / 2} style={{ stroke: "var(--border)" }} />
       {pts.map((d, i) => {
         const bh = (Math.abs(d) / max) * (h / 2);
         return (
@@ -108,7 +109,7 @@ function Spark({ delta, mark }: { delta: number[]; mark: number | null }) {
             y={d < 0 ? h / 2 : h / 2 - bh}
             width={Math.max(1, bw - 0.4)}
             height={bh}
-            fill={d < 0 ? "#e5534b" : "#4b8be5"}
+            style={{ fill: d < 0 ? "var(--neg)" : "var(--accent)" }}
           />
         );
       })}
@@ -118,7 +119,7 @@ function Spark({ delta, mark }: { delta: number[]; mark: number | null }) {
           x2={(mark / delta.length) * w}
           y1={0}
           y2={h}
-          stroke="#f0c674"
+          style={{ stroke: "var(--warn)" }}
           strokeWidth={2}
         />
       )}

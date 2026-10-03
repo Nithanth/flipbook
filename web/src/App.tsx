@@ -6,19 +6,33 @@ import Study from "./screens/Study";
 
 const ROUTES = ["study", "runs", "compare", "divergence"] as const;
 type Route = (typeof ROUTES)[number];
+type Theme = "dark" | "light";
 
 function routeFromHash(): Route {
   const r = window.location.hash.replace(/^#\/?/, "").split("?")[0];
   return (ROUTES as readonly string[]).includes(r) ? (r as Route) : "study";
 }
 
+function initialTheme(): Theme {
+  const saved = localStorage.getItem("theme");
+  if (saved === "light" || saved === "dark") return saved;
+  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+
 export default function App() {
   const [route, setRoute] = useState<Route>(routeFromHash());
+  const [theme, setTheme] = useState<Theme>(initialTheme());
+
   useEffect(() => {
     const onHash = () => setRoute(routeFromHash());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("theme", theme);
+  }, [theme]);
 
   return (
     <div className="app">
@@ -29,6 +43,14 @@ export default function App() {
             {r}
           </a>
         ))}
+        <span className="spacer" />
+        <button
+          className="theme-btn"
+          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+          title="toggle theme"
+        >
+          {theme === "dark" ? "light" : "dark"}
+        </button>
       </nav>
       <main>
         {route === "runs" && <Runs />}
