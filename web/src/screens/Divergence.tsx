@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type DivergenceRow } from "../api";
+import { api, type DivergenceRow, type Run } from "../api";
 import Tip from "../Tip";
 
 interface Pair {
@@ -9,19 +9,28 @@ interface Pair {
 
 export default function Divergence() {
   const [pairs, setPairs] = useState<Pair[]>([]);
+  const [runs, setRuns] = useState<Run[]>([]);
   const q = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
   const initial =
     q.get("base") && q.get("ckpt") ? `${q.get("base")}__${q.get("ckpt")}` : "";
   const [sel, setSel] = useState(initial);
   const [rows, setRows] = useState<DivergenceRow[] | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
+    api.runs().then(setRuns);
     api.divergencePairs().then((ps) => {
       setPairs(ps);
       if (ps.length && !sel) setSel(`${ps[0].base}__${ps[0].ckpt}`);
     });
   }, []);
+
+  // hash → human label; fall back to step tag, then a short hash
+  const label = (id: string) => {
+    const r = runs.find((x) => x.run_id === id);
+    return r?.label ?? (r?.train_step != null ? `step${r.train_step}` : id.slice(0, 10));
+  };
 
   useEffect(() => {
     if (!sel) return;
@@ -45,11 +54,15 @@ export default function Divergence() {
             <select value={sel} onChange={(e) => setSel(e.target.value)}>
               {pairs.map((p) => (
                 <option key={`${p.base}__${p.ckpt}`} value={`${p.base}__${p.ckpt}`}>
-                  {p.base.slice(0, 12)} → {p.ckpt.slice(0, 12)}
+                  {label(p.base)} → {label(p.ckpt)}
+                  {p.base === p.ckpt ? " (noise floor)" : ""}
                 </option>
               ))}
             </select>
           </label>
+          <a className="sub" href={`#/compare?a=${sel.split("__")[0]}&b=${sel.split("__")[1]}`}>
+            open in compare →
+          </a>
         </div>
       )}
       {err && <p className="err">{err}</p>}
@@ -65,21 +78,43 @@ export default function Divergence() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={`${r.row_id}:${r.sample_idx}`}>
-                <td className="mono">{r.row_id}:{r.sample_idx}</td>
-                <td className={r.sum_nats < 0 ? "neg" : "pos"}>
-                  {r.sum_nats.toFixed(1)}
-                </td>
-                <td>{r.divergence_pos ?? "—"}</td>
-                <td>
-                  {r.p_skip_base.toFixed(3)} → {r.p_skip_ckpt.toFixed(3)}
-                </td>
-                <td>
-                  <Spark delta={r.delta} mark={r.divergence_pos} />
-                </td>
-              </tr>
-            ))}
+            {rows.map((r) => {
+              const key = `${r.row_id}:${r.sample_idx}`;
+              const isOpen = open === key;
+              return [
+                <tr
+                  key={key}
+                  className="fliprow"
+                  onClick={() => setOpen(isOpen ? null : key)}
+                >
+                  <td className="mono">{key}</td>
+                  <td className={r.sum_nats < 0 ? "neg" : "pos"}>
+                    {r.sum_nats.toFixed(1)}
+                  </td>
+                  <td>{r.divergence_pos ?? "—"}</td>
+                  <td>
+                    {r.p_skip_base.toFixed(3)} → {r.p_skip_ckpt.toFixed(3)}
+                  </td>
+                  <td>
+                    <Spark delta={r.delta} mark={r.divergence_pos} />
+                  </td>
+                </tr>,
+                isOpen && (
+                  <tr key={`${key}-x`}>
+                    <td colSpan={5} className="tracexp">
+                      <Spark delta={r.delta} mark={r.divergence_pos} w={800} h={72} />
+                      <div className="sub">
+                        {r.delta.length.toLocaleString()} tokens · Σ {r.sum_nats.toFixed(1)} nats ·
+                        mean {r.mean_nats.toFixed(4)} nats/token
+                        {r.divergence_pos != null
+                          ? ` · first divergence at token ${r.divergence_pos.toLocaleString()}`
+                          : ""}
+                      </div>
+                    </td>
+                  </tr>
+                ),
+              ];
+            })}
           </tbody>
         </table>
       )}
@@ -88,9 +123,17 @@ export default function Divergence() {
 }
 
 /** Delta sparkline: red = ckpt less confident than base, blue = more. */
-function Spark({ delta, mark }: { delta: number[]; mark: number | null }) {
-  const w = 220;
-  const h = 28;
+function Spark({
+  delta,
+  mark,
+  w = 220,
+  h = 28,
+}: {
+  delta: number[];
+  mark: number | null;
+  w?: number;
+  h?: number;
+}) {
   if (!delta.length) return null;
   const step = Math.max(1, Math.floor(delta.length / w));
   const pts: number[] = [];

@@ -116,6 +116,7 @@ th {
   padding: 8px 12px 8px 0;
 }
 td { padding: 6px 12px 6px 0; border-top: 1px solid var(--border); }
+tbody tr:hover td { background: var(--surface-2); }
 table.agreement td { border: 1px solid var(--border); padding: 10px 14px; }
 
 .mono {
@@ -151,9 +152,21 @@ tr.gain td { color: var(--pos); }
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 12px;
+  cursor: pointer;
 }
+.mini:hover { border-color: var(--muted); }
+.mini.sel { border-color: var(--accent); }
 .mini-label { color: var(--muted); font-size: 11px; margin-bottom: 4px; }
 .mini-val { font-size: 13px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+.read { margin: 14px 0 4px; border-left: 3px solid var(--accent); }
+.read p { margin: 6px 0 0; font-size: 13px; line-height: 1.55; }
+.read p::before { content: "· "; color: var(--accent); font-weight: 700; }
+.chart.focus { margin-top: 12px; }
+
+tr.fliprow { cursor: pointer; }
+td.tracexp { background: var(--surface); border-top: none; padding: 10px 14px; }
+td.tracexp .sub { margin-top: 6px; }
 
 .tip {
   border-bottom: 1px dotted var(--muted);

@@ -49,9 +49,29 @@ export default function Compare() {
         <RunPicker label="base" runs={runs} value={a} onChange={setA} />
         <RunPicker label="ckpt" runs={runs} value={b} onChange={setB} />
       </div>
+      {pair && (
+        <ContextLine pair={pair} runs={runs} />
+      )}
       {err && <p className="err">{err}</p>}
-      {pair && <Report pair={pair} />}
+      {pair && <Report pair={pair} runs={runs} />}
     </>
+  );
+}
+
+/** What am I comparing? study · manifest · label names, for someone who landed via a deep link. */
+function ContextLine({ pair, runs }: { pair: PairReport; runs: Run[] }) {
+  const ra = runs.find((r) => r.run_id === pair.run_a);
+  const rb = runs.find((r) => r.run_id === pair.run_b);
+  const bits = [
+    ra?.study ?? rb?.study,
+    ra?.manifest ?? ra?.manifest_hash?.slice(0, 10),
+    ra?.model ?? rb?.model,
+  ].filter(Boolean);
+  return (
+    <p className="sub" style={{ marginTop: -8 }}>
+      {ra?.label ?? pair.run_a.slice(0, 8)} → {rb?.label ?? pair.run_b.slice(0, 8)}
+      {bits.length ? ` · ${bits.join(" · ")}` : ""}
+    </p>
   );
 }
 
@@ -89,8 +109,13 @@ function RunPicker({
   );
 }
 
-function Report({ pair }: { pair: PairReport }) {
+function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
   const ag = pair.agreement;
+  const labelA = runs.find((r) => r.run_id === pair.run_a)?.label ?? "base";
+  const labelB = runs.find((r) => r.run_id === pair.run_b)?.label ?? "ckpt";
+  const failKinds = [
+    ...new Set([...Object.keys(pair.failures.a), ...Object.keys(pair.failures.b)]),
+  ].sort();
   return (
     <>
       <div className="cards">
@@ -125,6 +150,18 @@ function Report({ pair }: { pair: PairReport }) {
         </div>
         <div className="card">
           <div className="big">
+            <Tip text="Average response length in generated tokens. A big paired shift means the output regime changed — rambling or collapsing — not just accuracy.">
+              {pair.tokens.a.mean.toFixed(0)} → {pair.tokens.b.mean.toFixed(0)}
+            </Tip>
+          </div>
+          <div className="sub">
+            gen tokens · Δ {pair.delta_tokens >= 0 ? "+" : ""}
+            {pair.delta_tokens.toFixed(0)} [{pair.delta_tokens_ci[0].toFixed(0)},{" "}
+            {pair.delta_tokens_ci[1].toFixed(0)}]
+          </div>
+        </div>
+        <div className="card">
+          <div className="big">
             ${pair.cost_a.toFixed(2)} vs ${pair.cost_b.toFixed(2)}
           </div>
           <div className="sub">estimated cost</div>
@@ -136,14 +173,51 @@ function Report({ pair }: { pair: PairReport }) {
         <tbody>
           <tr>
             <td>both right <b>{ag.both_right}</b></td>
-            <td>a only <b>{ag.a_only}</b></td>
+            <td>only {labelA} right <b>{ag.a_only}</b></td>
           </tr>
           <tr>
-            <td>b only <b>{ag.b_only}</b></td>
+            <td>only {labelB} right <b>{ag.b_only}</b></td>
             <td>both wrong <b>{ag.both_wrong}</b></td>
           </tr>
         </tbody>
       </table>
+
+      {failKinds.length > 0 && (
+        <>
+          <h2>
+            <Tip text="Why the wrong samples were wrong: truncated at the token cap, no parseable answer, wrong answer, etc. This is the shape of the failure — the difference between 'degenerate outputs' and 'just wrong'.">
+              failure kinds
+            </Tip>
+          </h2>
+          <table>
+            <thead>
+              <tr>
+                <th>kind</th>
+                <th>{labelA}</th>
+                <th>{labelB}</th>
+                <th>Δ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {failKinds.map((k) => {
+                const na = pair.failures.a[k] ?? 0;
+                const nb = pair.failures.b[k] ?? 0;
+                return (
+                  <tr key={k}>
+                    <td>{k.replace(/_/g, " ")}</td>
+                    <td>{na}</td>
+                    <td>{nb}</td>
+                    <td className={nb - na > 0 ? "neg" : nb - na < 0 ? "pos" : ""}>
+                      {nb - na >= 0 ? "+" : ""}
+                      {nb - na}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </>
+      )}
 
       {pair.flips.length > 0 && (
         <>
