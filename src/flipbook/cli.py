@@ -22,13 +22,22 @@ def _store(args) -> Store:
     return Store(args.store)
 
 
+def _run_id(store: Store, ref: str) -> str:
+    """CLI surface for Store.resolve_run — a bad ref is a usage error."""
+    try:
+        return store.resolve_run(ref)["run_id"]
+    except LookupError as e:
+        raise SystemExit(str(e)) from e
+
+
 def _add_store(p: argparse.ArgumentParser) -> None:
     p.add_argument("--store", default="./flipbook_store")
 
 
-def _add_eval_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--model", required=True)
-    p.add_argument("--manifest", required=True)
+def _add_eval_args(p: argparse.ArgumentParser, required: bool = True) -> None:
+    # lint --run reads model/manifest off the stored run record instead
+    p.add_argument("--model", required=required)
+    p.add_argument("--manifest", required=required)
     p.add_argument("--effort", type=float, default=None)
     p.add_argument("--k", type=int, default=4)
     p.add_argument("--temperature", type=float, default=0.7)
@@ -108,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--run")
     src.add_argument("--config", action="store_true")
-    _add_eval_args(p)
+    _add_eval_args(p, required=False)
     _add_store(p)
     p = sub.add_parser("graders", help="list registered grader ids")
     p = sub.add_parser("grade", help="dry-run a grader on one text")
@@ -214,10 +223,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "lint":
         store = _store(args)
         if args.run:
-            f = store.path / "runs" / f"{args.run}.json"
-            if not f.exists():
-                raise SystemExit(f"no run {args.run!r}")
-            rec = json.loads(f.read_text())
+            try:
+                rec = store.resolve_run(args.run)
+            except LookupError as e:
+                raise SystemExit(str(e)) from e
             cfg = RunConfig(
                 model=rec["checkpoint_path"] or rec["model_id"],
                 manifest_hash=rec["manifest_hash"], effort=rec["effort"],
@@ -228,6 +237,8 @@ def main(argv: list[str] | None = None) -> int:
             findings = lint(cfg, rec["model_id"],
                             grader_ids=_grader_ids(store, rec["manifest_hash"]))
         else:
+            if not args.model or not args.manifest:
+                raise SystemExit("lint --config needs --model and --manifest")
             base_model, renderer = asyncio.run(_resolve(args))
             cfg = _build_cfg(args, store, base_model, renderer)
             findings = lint(cfg, base_model, grader_ids=_grader_ids(store, args.manifest))
@@ -259,11 +270,15 @@ def main(argv: list[str] | None = None) -> int:
                   f"effort={r.get('effort')} k={r.get('k')} {r.get('model_id') or ''}")
         return 0
     if args.cmd == "budget":
-        b = budget(_store(args), args.run)
+        store = _store(args)
+        b = budget(store, _run_id(store, args.run))
         print(json.dumps(b.__dict__, indent=2))
         return 0
     if args.cmd == "compare":
-        pair = compare(_store(args), args.run_a, args.run_b)
+        store = _store(args)
+        pair = compare(
+            store, _run_id(store, args.run_a), _run_id(store, args.run_b)
+        )
         compat = pair.comparability
         if compat.get("blocks"):
             for msg in compat["blocks"]:
@@ -275,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(pair.to_dict(), indent=2))
         elif args.markdown:
             a = pair.agreement
-            print(f"| | {args.run_a} | {args.run_b} |\n|---|---|---|")
+            print(f"| | {pair.run_a} | {pair.run_b} |\n|---|---|---|")
             print(f"| acc | {pair.acc_a:.3f} | {pair.acc_b:.3f} |")
             print(f"| delta | — | {pair.delta:+.3f} "
                   f"[{pair.delta_ci[0]:+.3f}, {pair.delta_ci[1]:+.3f}] |")
@@ -313,11 +328,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "diverge":
         store = _store(args)
+        base, ckpt = _run_id(store, args.base), _run_id(store, args.ckpt)
         rows = None
         if args.rows == "flips":
-            pair = compare(store, args.base, args.ckpt)
+            pair = compare(store, base, ckpt)
             rows = [f["row_id"] for f in pair.flips]
-        s = diverge(store, args.base, args.ckpt, rows, forecast=args.forecast)
+        s = diverge(store, base, ckpt, rows, forecast=args.forecast)
         if args.forecast:
             print(f"forecast: {s.n_rows} rows · ~{s.forecast['prefill_tokens']:,} prefill tok "
                   f"· ~${s.est_cost_usd or 0:.3f} discount · ~${s.forecast['usd_list'] or 0:.3f} list")
@@ -327,8 +343,9 @@ def main(argv: list[str] | None = None) -> int:
               f"p_skip {s.mean_p_skip_base:.3f} → {s.mean_p_skip_ckpt:.3f} · ~${s.est_cost_usd or 0:.4f}")
         return 0
     if args.cmd == "effort":
+        store = _store(args)
         e_low, e_high = (float(x) for x in args.pair.split(","))
-        s = effort_gap(_store(args), args.run, e_low, e_high, forecast=args.forecast)
+        s = effort_gap(store, _run_id(store, args.run), e_low, e_high, forecast=args.forecast)
         if args.forecast:
             print(f"forecast: {s.n_rows} traces · ~{s.forecast['prefill_tokens']:,} prefill tok "
                   f"· ~${s.est_cost_usd or 0:.3f} discount · ~${s.forecast['usd_list'] or 0:.3f} list")

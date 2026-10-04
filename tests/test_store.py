@@ -58,6 +58,42 @@ def test_run_lifecycle(tmp_path):
     assert [r["run_id"] for r in store.runs("s1")] == ["r1"]
 
 
+def test_resolve_run(tmp_path):
+    store = Store(tmp_path)
+    store.put_run({"run_id": "abcd1234ffff", "study": "s1", "label": "base"})
+    store.put_run({"run_id": "abcd5678eeee", "study": "s1", "label": "ckpt"})
+    store.put_run({"run_id": "99990000aaaa", "study": "s2", "label": "base"})
+
+    assert store.resolve_run("abcd1234ffff")["label"] == "base"          # exact id
+    assert store.resolve_run("abcd1234")["run_id"] == "abcd1234ffff"    # unique prefix
+    assert store.resolve_run("s1/base")["run_id"] == "abcd1234ffff"     # study/label
+    assert store.resolve_run("ckpt")["run_id"] == "abcd5678eeee"        # unique bare label
+
+    try:
+        store.resolve_run("base")  # label exists in two studies
+    except LookupError as e:
+        assert "ambiguous" in str(e) and "s1" in str(e)
+    else:
+        raise AssertionError("expected ambiguous label to fail")
+
+    try:
+        store.resolve_run("nope")
+    except LookupError as e:
+        assert "no run matches" in str(e)
+    else:
+        raise AssertionError("expected unknown ref to fail")
+
+
+def test_put_run_warns_on_label_clash(tmp_path):
+    import pytest
+    store = Store(tmp_path)
+    store.put_run({"run_id": "r1", "study": "s1", "label": "x"})
+    store.put_run({"run_id": "r2", "study": "s2", "label": "x"})  # other study: fine
+    with pytest.warns(UserWarning, match="already has label"):
+        store.put_run({"run_id": "r3", "study": "s1", "label": "x"})
+    store.put_run({"run_id": "r1", "study": "s1", "label": "x"})  # self: no warn
+
+
 def test_samples_idempotent(tmp_path):
     store = Store(tmp_path)
     store.put_samples("r1", [_sample("r1", "a:1"), _sample("r1", "a:2")])

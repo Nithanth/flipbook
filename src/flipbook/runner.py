@@ -313,7 +313,10 @@ async def evaluate_async(
         {
             "run_id": rid, "config_fp": config_fp(cfg), "created_at": datetime.now(UTC).isoformat(),
             "manifest_hash": manifest.manifest_hash, "study": cfg.study, "source": "eval",
-            "label": cfg.label, "model_id": resolved.base_model,
+            # unlabeled runs still get an addressable name: tail of
+            # "org/Model" or "tinker://…/weights_name" (Store.resolve_run)
+            "label": cfg.label or cfg.model.rsplit("/", 1)[-1],
+            "model_id": resolved.base_model,
             "checkpoint_path": resolved.checkpoint_path,
             "base_model": resolved.base_model if resolved.checkpoint_path else None,
             "train_step": _train_step(resolved.checkpoint_path),
