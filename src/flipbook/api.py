@@ -9,16 +9,43 @@ from functools import lru_cache
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.compute as pc
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from flipbook.budget import budget
+from flipbook.graders import strip_control_tokens
 from flipbook.stats import compare
 from flipbook.store import Store
 
 # sample rows carry token_ids/logprobs/messages
 _HEAVY_COLS = {"token_ids", "token_logprobs", "messages"}
+
+
+@lru_cache(maxsize=4)
+def _tokenizer(model_id: str):
+    # per-id decode is what we need (token boundaries), so keep the raw tokenizer
+    from tinker_cookbook.tokenizer_utils import get_tokenizer
+
+    return get_tokenizer(model_id)
+
+
+def _thinking(model_id: str | None, token_ids: list | None, text: str | None) -> str | None:
+    """Decoded generation preceding the stored final message, or None.
+
+    `text` is only the post-thinking message the renderer parsed; token_ids
+    carry the whole generation, so everything before `text` is the thinking.
+    """
+    if not model_id or not token_ids or not text:
+        return None
+    full = _tokenizer(model_id).decode([int(i) for i in token_ids])
+    # WHY a 40-char prefix: the stored text may be whitespace-trimmed relative
+    # to the decode, so an exact full-string find can miss
+    offset = full.find(text[:40])
+    if offset < 0:
+        return None
+    return strip_control_tokens(full[:offset]).strip()
 
 
 def _rows(table: pa.Table, drop: set[str] | None = None) -> list[dict]:
@@ -73,7 +100,55 @@ def create_app(store_path: str | Path) -> FastAPI:
         for rid in (a, b):
             if not (store.path / "samples" / f"{rid}.parquet").exists():
                 raise HTTPException(404, f"no run {rid}")
-        return _compare(a, b)
+        report = _compare(a, b)
+        if blocks := report["comparability"].get("blocks"):
+            raise HTTPException(422, "; ".join(blocks))
+        return report
+
+    @app.get("/api/compare/row")
+    def compare_row(
+        a: str = Query(...), b: str = Query(...), row: str = Query(...)
+    ) -> dict:
+        for rid in (a, b):
+            if not (store.path / "samples" / f"{rid}.parquet").exists():
+                raise HTTPException(404, f"no run {rid}")
+        run_a = next((r for r in store.runs() if r["run_id"] == a), None) or {}
+        mh = run_a.get("manifest_hash")
+        mrows = (
+            store.manifest_rows(mh)
+            if mh and (store.path / "manifest_rows" / f"{mh}.parquet").exists()
+            else []
+        )
+        mrow = next((r for r in mrows if r["row_id"] == row), None)
+        if not mrow:
+            raise HTTPException(404, f"no row {row} in manifest for run {a}")
+        keep = {"sample_idx", "text", "gen_tokens", "stop_reason",
+                "verdict", "extracted", "failure_kind"}
+
+        def side(rid: str) -> list[dict]:
+            run = next((r for r in store.runs() if r["run_id"] == rid), None) or {}
+            model_id = run.get("model_id") or run.get("model")
+            tbl = store.samples(rid)
+            # token_ids is the heavy column; filter to this row before materializing
+            tbl = tbl.filter(pc.equal(tbl.column("row_id"), row))
+            out = []
+            for r in _rows(tbl):
+                s = {k: r.get(k) for k in keep}
+                s["text_clean"] = strip_control_tokens(r.get("text") or "").strip()
+                s["thinking"] = _thinking(model_id, r.get("token_ids"), r.get("text"))
+                out.append(s)
+            return sorted(out, key=lambda r: r["sample_idx"])
+
+        run_b = next((r for r in store.runs() if r["run_id"] == b), None) or {}
+        return {
+            "row_id": row,
+            "question": mrow["messages"],
+            "answer": mrow["gold"],
+            "k_a": run_a.get("k"),
+            "k_b": run_b.get("k"),
+            "a": side(a),
+            "b": side(b),
+        }
 
     @app.get("/api/divergence/pairs")
     def divergence_pairs() -> list[dict]:
@@ -91,6 +166,51 @@ def create_app(store_path: str | Path) -> FastAPI:
         if not f.exists():
             raise HTTPException(404, f"no divergence for {base} vs {ckpt}")
         return _rows(store.divergence(base, ckpt))
+
+    @app.get("/api/divergence/trace")
+    def divergence_trace(
+        base: str = Query(...),
+        ckpt: str = Query(...),
+        row: str = Query(...),
+        sample: int = Query(...),
+    ) -> dict:
+        # pairs each delta with the baseline's token string so the UI can render
+        # the trace as colored text — 404s (not a sparse delta array) when the
+        # store predates token_ids
+        if not (store.path / "divergence" / f"{base}__{ckpt}.parquet").exists():
+            raise HTTPException(404, f"no divergence for {base} vs {ckpt}")
+        drow = next(
+            (
+                r
+                for r in _rows(store.divergence(base, ckpt))
+                if r["row_id"] == row and r["sample_idx"] == sample
+            ),
+            None,
+        )
+        if not drow:
+            raise HTTPException(404, f"no divergence row {row}:{sample}")
+        srow = next(
+            (
+                r
+                for r in _rows(store.samples(base))
+                if r["row_id"] == row and r["sample_idx"] == sample
+            ),
+            None,
+        )
+        ids = (srow or {}).get("token_ids")
+        if not ids:
+            raise HTTPException(404, "no baseline token ids for this sample")
+        run = next((r for r in store.runs() if r["run_id"] == base), {})
+        model_id = run.get("model_id") or run.get("model")
+        if not model_id:
+            raise HTTPException(404, f"no model recorded on run {base}")
+        tok = _tokenizer(model_id)
+        return {
+            "tokens": [
+                {"t": tok.decode([int(i)]), "d": d}
+                for i, d in zip(ids, drow["delta"])
+            ]
+        }
 
     @app.get("/api/effort/runs")
     def effort_runs() -> list[dict]:
@@ -124,7 +244,6 @@ def create_app(store_path: str | Path) -> FastAPI:
 
     @app.get("/api/studies")
     def studies() -> list[str]:
-        # WHY union: a study with runs but no imported metrics.jsonl still exists
         d = store.path / "training_metrics"
         names = {f.stem for f in d.glob("*.parquet")} if d.exists() else set()
         names |= {r["study"] for r in store.runs() if r.get("study")}

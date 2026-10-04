@@ -59,11 +59,25 @@ export interface PairReport {
   cost_a: number;
   cost_b: number;
   failures: Record<string, Record<string, number>>;
+  comparability?: { ok: boolean; blocks: string[]; warnings: string[]; token_views: boolean };
+  // absent when an older server serves the pair report
+  cells?: {
+    row_id: string;
+    p_a: number | null;
+    p_b: number | null;
+    cell: "both_right" | "both_wrong" | "a_only" | "b_only" | "excluded";
+  }[];
+  failure_rows_b?: Record<string, string[]>;
+  passn?: Record<
+    string,
+    { a: number; b: number; delta: number; delta_ci: [number, number] }
+  >;
 }
 
 export interface DivergenceRow {
   row_id: string;
   sample_idx: number;
+  n?: number | null;
   delta: number[];
   sum_nats: number;
   mean_nats: number;
@@ -81,6 +95,30 @@ export interface MetricRow {
   value: number;
 }
 
+export interface RowSample {
+  sample_idx: number;
+  text: string;
+  gen_tokens: number;
+  stop_reason: string;
+  verdict: number | null;
+  extracted: string | null;
+  failure_kind: string | null;
+  // decoded generation before the final message; null when token_ids are absent
+  thinking?: string | null;
+  // text with renderer control tokens stripped
+  text_clean?: string;
+}
+
+export interface RowDetail {
+  row_id: string;
+  question: { role: string; content: string }[];
+  answer: string;
+  k_a?: number | null;
+  k_b?: number | null;
+  a: RowSample[];
+  b: RowSample[];
+}
+
 export interface SampleRow {
   row_id: string;
   sample_idx: number;
@@ -94,7 +132,24 @@ export interface SampleRow {
 
 async function get<T>(path: string): Promise<T> {
   const r = await fetch(path);
-  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  if (!r.ok) {
+    // FastAPI errors are {"detail": "..."}; show the message, not the envelope
+    const body = await r.text();
+    let detail = body;
+    try {
+      detail = JSON.parse(body).detail ?? body;
+    } catch {
+      /* not JSON */
+    }
+    throw new Error(`${r.status} ${detail}`);
+  }
+  // a non-JSON 200 means the SPA fallback answered — the running server
+  // predates this endpoint
+  if (!r.headers.get("content-type")?.includes("application/json")) {
+    throw new Error(
+      `${path}: the server returned HTML, not JSON — it's probably running an older build; restart \`flipbook serve\``,
+    );
+  }
   return r.json();
 }
 
@@ -103,9 +158,17 @@ export const api = {
   runs: () => get<Run[]>("/api/runs"),
   samples: (run: string) => get<SampleRow[]>(`/api/runs/${run}/samples`),
   compare: (a: string, b: string) => get<PairReport>(`/api/compare?a=${a}&b=${b}`),
+  compareRow: (a: string, b: string, row: string) =>
+    get<RowDetail>(
+      `/api/compare/row?a=${a}&b=${b}&row=${encodeURIComponent(row)}`,
+    ),
   divergence: (base: string, ckpt: string) =>
     get<DivergenceRow[]>(`/api/divergence?base=${base}&ckpt=${ckpt}`),
   divergencePairs: () => get<{ base: string; ckpt: string }[]>("/api/divergence/pairs"),
+  divergenceTrace: (base: string, ckpt: string, row: string, sample: number) =>
+    get<{ tokens: { t: string; d: number }[] }>(
+      `/api/divergence/trace?base=${base}&ckpt=${ckpt}&row=${encodeURIComponent(row)}&sample=${sample}`,
+    ),
   studies: () => get<string[]>("/api/studies"),
   study: (name: string) => get<StudyDetail>(`/api/studies/${name}`),
   metrics: (study: string) => get<MetricRow[]>(`/api/metrics?study=${study}`),

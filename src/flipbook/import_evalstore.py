@@ -52,7 +52,7 @@ def import_evalstore(store: Store, path: str | Path) -> str:
                     "text": o.get("raw_output"), "prompt_tokens": o.get("prompt_tokens"),
                     "gen_tokens": o.get("gen_tokens"), "stop_reason": o.get("stop_reason"),
                     "verdict": verdict, "extracted": extracted,
-                    "failure_kind": _failure_kind(verdict or 0.0, extracted, o.get("stop_reason") or "")
+                    "failure_kind": _failure_kind(verdict or 0.0, extracted, o.get("stop_reason") or "", o.get("raw_output"))
                     if o.get("error") is None else "error",
                     "grade_note": (o.get("grader") or {}).get("rationale"),
                     "error": o.get("error"), "est_cost_usd": o.get("est_cost_usd"),

@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from flipbook.config import RunConfig, config_fp, run_id
-from flipbook.graders import grade
+from flipbook.graders import grade, is_empty_response
 from flipbook.lint import Finding, lint
 from flipbook.manifest import Manifest
 from flipbook.pricing import PRICES, estimate_usd
@@ -102,13 +102,17 @@ def _prompt_ints(renderer, renderer_name: str, messages: list[dict], effort: flo
     return renderer.build_generation_prompt(messages).to_ints()
 
 
-def _failure_kind(verdict: float, extracted: str | None, stop_reason: str) -> str | None:
+def _failure_kind(
+    verdict: float, extracted: str | None, stop_reason: str, text: str | None
+) -> str | None:
     # precedence: a correct answer is never a failure, truncation only counts
-    # when it caused the failure
+    # when it caused the failure, and an empty message is not a parse failure
     if verdict == 1.0:
         return None
     if stop_reason == "length":
         return "truncation"
+    if is_empty_response(text):
+        return "empty"
     if extracted is None:
         return "parse"
     return "wrong_answer"
@@ -188,8 +192,11 @@ async def evaluate_async(
         cfg.model, cfg.renderer, base_model=base_model, service_client=sc
     )
 
-    # lint before any paid client exists
-    findings = lint(cfg, resolved.base_model)
+    # lint before any paid client exists; grader ids resolve or the eval
+    # would burn a paid run on rows that all land as grader_error
+    findings = lint(
+        cfg, resolved.base_model, grader_ids={r["grader_id"] for r in rows}
+    )
     errors = [f for f in findings if f.level == "error"]
     if errors:
         raise LintFailed(errors)
@@ -282,7 +289,7 @@ async def evaluate_async(
                     "run_id": rid, "row_id": row["row_id"], "sample_idx": i,
                     "text": text, "prompt_tokens": len(toks), "gen_tokens": len(seq.tokens),
                     "stop_reason": seq.stop_reason, "verdict": verdict,
-                    "extracted": extracted, "failure_kind": _failure_kind(verdict, extracted, seq.stop_reason),
+                    "extracted": extracted, "failure_kind": _failure_kind(verdict, extracted, seq.stop_reason, text),
                     "grade_note": note, "error": None, "est_cost_usd": est,
                     "token_ids": list(seq.tokens), "token_logprobs": list(seq.logprobs) if seq.logprobs else None,
                 }

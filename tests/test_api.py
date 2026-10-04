@@ -12,13 +12,13 @@ def _store(tmp_path) -> Store:
             {
                 "row_id": f"r{i}", "benchmark": "b",
                 "messages": [{"role": "user", "content": "q"}],
-                "answer": "1", "grader": "g", "source_ids": {},
+                "gold": "1", "grader_id": "g", "source_ids": {},
             }
             for i in range(4)
         ],
     )
     for rid, vs in (("a", [1, 1, 0, 1]), ("b", [0, 1, 0, 0])):
-        store.put_run({"run_id": rid, "k": 1})
+        store.put_run({"run_id": rid, "k": 1, "manifest_hash": "mh1"})
         store.put_samples(rid, [
             {
                 "run_id": rid, "row_id": f"r{i}", "sample_idx": 0,
@@ -78,6 +78,62 @@ def test_compare_endpoint(tmp_path):
     p = c.get("/api/compare", params={"a": "a", "b": "b"}).json()
     assert p["n_pairs"] == 4 and p["acc_a"] == 0.75 and p["acc_b"] == 0.25
     assert p["agreement"]["a_only"] == 2
+    assert p["comparability"]["ok"] and p["comparability"]["warnings"] == []
+
+
+def test_compare_mismatched_manifest_is_422(tmp_path):
+    store = _store(tmp_path)
+    store.put_run({"run_id": "b", "k": 1, "manifest_hash": "mh2"})
+    c = _client(tmp_path)
+    r = c.get("/api/compare", params={"a": "a", "b": "b"})
+    assert r.status_code == 422 and "manifests" in r.json()["detail"]
+
+
+def test_compare_row(tmp_path):
+    _store(tmp_path)
+    c = _client(tmp_path)
+    r = c.get("/api/compare/row", params={"a": "a", "b": "b", "row": "r1"})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["question"] == [{"role": "user", "content": "q"}]
+    assert d["answer"] == "1"
+    assert len(d["a"]) == 1 and len(d["b"]) == 1
+    assert d["a"][0]["verdict"] == 1.0 and d["b"][0]["verdict"] == 1.0
+    assert d["k_a"] == 1 and d["k_b"] == 1
+    # fixture rows carry no token_ids, so there is no thinking to recover
+    assert d["a"][0]["thinking"] is None
+    assert d["a"][0]["text_clean"] == "t"
+    assert c.get(
+        "/api/compare/row", params={"a": "a", "b": "b", "row": "nope"}
+    ).status_code == 404
+
+
+def test_compare_row_thinking_and_text_clean(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    store.put_run({"run_id": "a", "k": 2, "manifest_hash": "mh1", "model_id": "fake-model"})
+    store.put_samples("a", [
+        {
+            "run_id": "a", "row_id": "r1", "sample_idx": 1,
+            "text": "<|x|>final answer", "prompt_tokens": 1, "gen_tokens": 3,
+            "stop_reason": "stop", "verdict": 1.0, "extracted": "x",
+            "failure_kind": None, "error": None, "est_cost_usd": 0.0,
+            "token_ids": [1, 2, 3],
+        }
+    ])
+
+    class _Fake:
+        def decode(self, ids):
+            return "<|content_thinking|>let me think<|message_model|><|x|>final answer"
+
+    monkeypatch.setattr("flipbook.api._tokenizer", lambda _m: _Fake())
+    c = _client(tmp_path)
+    d = c.get("/api/compare/row", params={"a": "a", "b": "b", "row": "r1"}).json()
+    assert d["k_a"] == 2 and d["k_b"] == 1
+    s = d["a"][1]
+    assert s["text_clean"] == "final answer"
+    assert s["thinking"] == "let me think"
+    # the first sample has no token_ids
+    assert d["a"][0]["thinking"] is None
 
 
 def test_divergence_and_effort(tmp_path):
@@ -89,6 +145,46 @@ def test_divergence_and_effort(tmp_path):
     assert e[0]["gap_nats"] == 20.0
     assert c.get("/api/divergence", params={"base": "a", "ckpt": "x"}).status_code == 404
     assert c.get("/api/effort", params={"run": "a", "pair": "bad"}).status_code == 400
+
+
+def test_divergence_trace(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    store.put_run({"run_id": "a", "k": 1, "model_id": "fake-model"})
+    store.put_samples("a", [
+        {
+            "run_id": "a", "row_id": "r1", "sample_idx": 1,
+            "text": "hi", "prompt_tokens": 1, "gen_tokens": 2,
+            "stop_reason": "stop", "verdict": 1.0, "extracted": "x",
+            "failure_kind": None, "error": None, "est_cost_usd": 0.0,
+            "token_ids": [5, 7],
+        }
+    ])
+    store.put_divergence("a", "b", [
+        {
+            "row_id": "r1", "sample_idx": 1, "lp_base": [0.0, 0.0],
+            "lp_ckpt": [-0.5, -1.0], "delta": [-0.5, -1.0],
+            "sum_nats": -1.5, "mean_nats": -0.75,
+            "divergence_pos": 0, "win_argmin": 0,
+            "p_skip_base": 0.0, "p_skip_ckpt": 0.0, "cost_usd": 0.0,
+        }
+    ])
+
+    class _Fake:
+        def decode(self, ids):
+            return f"<{ids[0]}>"
+
+    monkeypatch.setattr("flipbook.api._tokenizer", lambda _m: _Fake())
+    c = _client(tmp_path)
+    t = c.get(
+        "/api/divergence/trace",
+        params={"base": "a", "ckpt": "b", "row": "r1", "sample": 1},
+    ).json()
+    assert t["tokens"] == [{"t": "<5>", "d": -0.5}, {"t": "<7>", "d": -1.0}]
+    # r0:0 has divergence but no token_ids → honest 404, not a stub
+    assert c.get(
+        "/api/divergence/trace",
+        params={"base": "a", "ckpt": "b", "row": "r0", "sample": 0},
+    ).status_code == 404
 
 
 def test_metrics_and_budget(tmp_path):

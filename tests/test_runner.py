@@ -31,10 +31,13 @@ def _cfg(mhash, **kw):
 
 
 def test_failure_kind_ordering():
-    assert _failure_kind(1.0, "x", "length") is None
-    assert _failure_kind(0.0, "x", "length") == "truncation"
-    assert _failure_kind(0.0, None, "stop") == "parse"
-    assert _failure_kind(0.0, "x", "stop") == "wrong_answer"
+    assert _failure_kind(1.0, "x", "length", "x") is None
+    assert _failure_kind(0.0, "x", "length", "x") == "truncation"
+    assert _failure_kind(0.0, None, "stop", "I give up") == "parse"
+    assert _failure_kind(0.0, "x", "stop", "x") == "wrong_answer"
+    # an end-of-message-only generation is empty, not unparseable
+    assert _failure_kind(0.0, None, "stop", "<|content_model_end_sampling|>") == "empty"
+    assert _failure_kind(0.0, None, "stop", "") == "empty"
 
 
 def test_train_step_from_path():
@@ -84,3 +87,14 @@ def test_lint_aborts_before_sampling(tmp_path):
     cfg = replace(_cfg(m.manifest_hash), effort=None)  # Inkling without effort -> error
     with pytest.raises(LintFailed):
         evaluate(cfg, store)
+
+
+def test_unresolvable_grader_aborts_before_sampling(tmp_path):
+    store, m = _store_with_manifest(tmp_path)
+    rows = [dict(r, grader_id="bogus") for r in m.rows]
+    m2 = Manifest(name="m2", manifest_hash=manifest_hash(rows), spec={},
+                  created_at="t", rows=rows)
+    store.put_manifest(m2.to_doc(), m2.rows)
+    with pytest.raises(LintFailed) as ei:
+        evaluate(_cfg(m2.manifest_hash), store, forecast=True)
+    assert "E_UNKNOWN_GRADER" in str(ei.value) and "bogus" in str(ei.value)

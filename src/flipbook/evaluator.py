@@ -115,6 +115,9 @@ class RegressionEvaluator(SamplingClientEvaluator):
             f"{name}/mean_gen_tokens": pair.tokens["b"]["mean"],
             f"{name}/cost_usd": pair.cost_b,
         }
+        for n in range(2, self.k + 1):
+            if str(n) in pair.passn:
+                metrics[f"{name}/pass{n}"] = pair.passn[str(n)]["b"]
         if self.diverge and pair.n_pairs:
             flips = [f["row_id"] for f in pair.flips]
             ds = await diverge_async(

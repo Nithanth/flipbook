@@ -55,6 +55,12 @@ def test_unknown_model_prices_warn():
     assert "W_NO_PRICES" in _codes(fs)
 
 
+def test_unresolvable_grader_ids_are_errors():
+    fs = lint(_cfg(), grader_ids=["gsm8k", "nope", "regex:("])
+    assert "E_UNKNOWN_GRADER" in _codes(fs)
+    assert not any(f.level == "error" for f in lint(_cfg(), grader_ids=["gsm8k", "regex:\\d+"]))
+
+
 def test_unresolvable_tinker_skips_inkling_checks():
     fs = lint(replace(_cfg(), model="tinker://x/sampler_weights/000024"))
     assert "E_INKLING_RENDERER" not in _codes(fs)

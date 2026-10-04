@@ -11,8 +11,12 @@
   },
   "dependencies": {
     "@fontsource-variable/inter": "5.2.8",
+    "katex": "^0.16.22",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "react-markdown": "10.1.0",
+    "rehype-katex": "7.0.1",
+    "remark-math": "6.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
