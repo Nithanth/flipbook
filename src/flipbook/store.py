@@ -191,6 +191,25 @@ class Store:
             raise LookupError(self._ambiguous(ref, hits))
         raise LookupError(f"no run matches {ref!r}")
 
+    def resolve_row(self, manifest_hash: str, ref: str) -> dict:
+        """Address a manifest row by row_id or unique prefix (of the id or
+        its hash suffix after the benchmark colon)."""
+        rows = self.manifest_rows(manifest_hash)
+        hits = [
+            r
+            for r in rows
+            if r["row_id"] == ref
+            or r["row_id"].startswith(ref)
+            or r["row_id"].rsplit(":", 1)[-1].startswith(ref)
+        ]
+        if len(hits) == 1:
+            return hits[0]
+        if hits:
+            raise LookupError(
+                f"ambiguous row ref {ref!r}: " + ", ".join(r["row_id"] for r in hits)
+            )
+        raise LookupError(f"no row matches {ref!r}")
+
     @staticmethod
     def _ambiguous(ref: str, hits: list[dict]) -> str:
         cand = ", ".join(

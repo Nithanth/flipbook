@@ -6,13 +6,15 @@ import argparse
 import asyncio
 import json
 import sys
+import textwrap
 
 from flipbook.budget import budget
 from flipbook.config import RunConfig
 from flipbook.diverge import diverge
 from flipbook.effort import effort_gap
+from flipbook.graders import strip_control_tokens
 from flipbook.lint import lint
-from flipbook.manifest import Manifest
+from flipbook.manifest import Manifest, question_text
 from flipbook.runner import LintFailed, evaluate, resolve_model
 from flipbook.stats import compare, gate
 from flipbook.store import Store
@@ -22,12 +24,16 @@ def _store(args) -> Store:
     return Store(args.store)
 
 
-def _run_id(store: Store, ref: str) -> str:
+def _run_rec(store: Store, ref: str) -> dict:
     """CLI surface for Store.resolve_run — a bad ref is a usage error."""
     try:
-        return store.resolve_run(ref)["run_id"]
+        return store.resolve_run(ref)
     except LookupError as e:
         raise SystemExit(str(e)) from e
+
+
+def _run_id(store: Store, ref: str) -> str:
+    return _run_rec(store, ref)["run_id"]
 
 
 def _add_store(p: argparse.ArgumentParser) -> None:
@@ -129,6 +135,13 @@ def main(argv: list[str] | None = None) -> int:
     _add_store(p)
     p = sub.add_parser("budget", help="token/cost distribution for a run")
     p.add_argument("run")
+    _add_store(p)
+    p = sub.add_parser("show", help="inspect one row's samples in a run")
+    p.add_argument("run", help="run id, prefix, study/label, or label")
+    p.add_argument("row", help="row id or unique prefix (of id or hash suffix)")
+    p.add_argument("--sample", type=int, default=None, help="only this sample index")
+    p.add_argument("--full", action="store_true", help="print full text, not the tail")
+    p.add_argument("--thinking", action="store_true", help="decode thinking from token_ids")
     _add_store(p)
     p = sub.add_parser("compare", help="paired stats between two runs")
     p.add_argument("run_a")
@@ -269,6 +282,54 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{r['run_id'][:12]}  {label:<10} {r.get('study') or '-':<14} "
                   f"effort={r.get('effort')} k={r.get('k')} {r.get('model_id') or ''}")
         return 0
+    if args.cmd == "show":
+        store = _store(args)
+        rec = _run_rec(store, args.run)
+        try:
+            row = store.resolve_row(rec["manifest_hash"], args.row)
+        except LookupError as e:
+            raise SystemExit(str(e)) from e
+        print(f"run {rec['run_id']}  ({rec.get('study') or '-'}/{rec.get('label') or '-'})")
+        print(textwrap.fill("Q: " + question_text(row["messages"]), 100))
+        print(f"gold: {row['gold']!r}   grader: {row['grader_id']}")
+        from flipbook.decode import thinking
+
+        tbl = store.samples(rec["run_id"])
+        samples = sorted(
+            (r for r in tbl.to_pylist() if r["row_id"] == row["row_id"]),
+            key=lambda r: r["sample_idx"],
+        )
+        if not samples:
+            print("  (no samples for this row)")
+        for s in samples:
+            if args.sample is not None and s["sample_idx"] != args.sample:
+                continue
+            v = s["verdict"]
+            badge = "✓" if v == 1.0 else ("✗" if v == 0.0 else (f"{v:.2f}" if v is not None else "err"))
+            bits = [f"s{s['sample_idx']} {badge}", f"{s['gen_tokens'] or 0} tok",
+                    f"stop={s['stop_reason'] or '-'}"]
+            if s["extracted"] is not None:
+                bits.append(f"extracted={s['extracted'][:40]!r}")
+            if s["failure_kind"]:
+                bits.append(f"failure={s['failure_kind']}")
+            if s["grade_note"]:
+                bits.append(f"note={s['grade_note'][:60]!r}")
+            if s["error"]:
+                bits.append(f"error={s['error'][:60]!r}")
+            print("  " + "  ·  ".join(bits))
+            if args.thinking:
+                think = thinking(rec.get("model_id"), s.get("token_ids"), s.get("text"))
+                if think:
+                    print(textwrap.indent(think, "    thinking: "))
+            text = strip_control_tokens(s["text"] or "").strip()
+            if args.full:
+                if text:
+                    print(textwrap.indent(text, "    "))
+            elif len(text) > 400:
+                print(textwrap.indent("…" + text[-400:], "    "))
+            elif text:
+                print(textwrap.indent(text, "    "))
+        return 0
     if args.cmd == "budget":
         store = _store(args)
         b = budget(store, _run_id(store, args.run))
@@ -276,9 +337,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "compare":
         store = _store(args)
-        pair = compare(
-            store, _run_id(store, args.run_a), _run_id(store, args.run_b)
-        )
+        rec_a = _run_rec(store, args.run_a)
+        pair = compare(store, rec_a["run_id"], _run_id(store, args.run_b))
         compat = pair.comparability
         if compat.get("blocks"):
             for msg in compat["blocks"]:
@@ -286,6 +346,16 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         for msg in compat.get("warnings", []):
             print(f"warning: {msg}", file=sys.stderr)
+        try:
+            q_by_row = {
+                r["row_id"]: question_text(r["messages"]).replace("\n", " ")[:60]
+                for r in store.manifest_rows(rec_a["manifest_hash"])
+            }
+        except FileNotFoundError:
+            q_by_row = {}
+        kind_by_row = {
+            rid: k for k, rids in pair.failure_rows_b.items() for rid in rids
+        }
         if args.json:
             print(json.dumps(pair.to_dict(), indent=2))
         elif args.markdown:
@@ -300,8 +370,9 @@ def main(argv: list[str] | None = None) -> int:
                   f"| a_only {a['a_only']} b_only {a['b_only']} |")
             print(f"\n{pair.n_pairs} paired rows, {len(pair.excluded)} excluded")
             for f in pair.flips:
+                q = f" — {q_by_row[f['row_id']]}" if f["row_id"] in q_by_row else ""
                 print(f"- {'**HARD** ' if f['hard'] else ''}{f['kind']}: "
-                      f"`{f['row_id']}` {f['p_a']:.2f} → {f['p_b']:.2f}")
+                      f"`{f['row_id']}` {f['p_a']:.2f} → {f['p_b']:.2f}{q}")
         else:
             a = pair.agreement
             print(f"{pair.run_a} acc={pair.acc_a:.3f}  vs  {pair.run_b} acc={pair.acc_b:.3f}")
@@ -312,12 +383,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"flips: {len(pair.flips)}  "
                   f"truncation {pair.truncation_rate_a:.2f} → {pair.truncation_rate_b:.2f}  "
                   f"cost ${pair.cost_a:.3f} vs ${pair.cost_b:.3f}")
+            fk = lambda d: ", ".join(f"{k}×{v}" for k, v in sorted(d.items())) or "none"
+            print(f"failure kinds: a: {fk(pair.failures['a'])}   b: {fk(pair.failures['b'])}")
             for n in sorted(pair.passn, key=int):
                 e = pair.passn[n]
                 print(f"  pass@{n} {e['a']:.3f} → {e['b']:.3f}")
             for f in pair.flips:
                 tag = "HARD " if f["hard"] else ""
-                print(f"  {tag}{f['kind']}: {f['row_id']}  {f['p_a']:.2f} → {f['p_b']:.2f}")
+                kind = kind_by_row.get(f["row_id"])
+                tail = f"  b:{kind}" if kind else ""
+                q = f"  {q_by_row[f['row_id']]!r}" if f["row_id"] in q_by_row else ""
+                print(f"  {tag}{f['kind']}: {f['row_id']}  {f['p_a']:.2f} → {f['p_b']:.2f}{tail}{q}")
             for e in pair.excluded:
                 print(f"  excluded {e['row_id']}: {e['reason']}")
         if args.gate:
