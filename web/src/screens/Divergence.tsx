@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type DivergenceRow, type Run } from "../api";
 import Tip from "../Tip";
-import { Spark, TraceView } from "../Trace";
+import { BranchView, Spark, TraceView } from "../Trace";
 import { runLabel } from "../runLabel";
 
 interface Pair {
@@ -104,7 +104,10 @@ export default function Divergence() {
                   onClick={() => setOpen(isOpen ? null : key)}
                 >
                   <td className="mono">
-                    <Tip text={r.row_id}>{`${short}:${r.sample_idx}`}</Tip>
+                    <Tip text={r.q ? `${short}:${r.sample_idx} — ${r.q}` : r.row_id}>
+                      {`${short}:${r.sample_idx}`}
+                    </Tip>
+                    {r.q && <div className="sub qcell">{r.q}</div>}
                   </td>
                   <td className={r.sum_nats < 0 ? "neg" : "pos"}>
                     {r.sum_nats.toFixed(1)}
@@ -135,6 +138,14 @@ export default function Divergence() {
                           ? ` · first divergence at token ${r.divergence_pos.toLocaleString()}`
                           : ""}
                       </div>
+                      <BranchView
+                        base={sel.split("__")[0]}
+                        ckpt={sel.split("__")[1]}
+                        row={r.row_id}
+                        sample={r.sample_idx}
+                        pos={r.divergence_pos ?? r.win_argmin}
+                        nTokens={r.delta.length}
+                      />
                     </td>
                   </tr>
                 ),

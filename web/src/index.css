@@ -252,8 +252,33 @@ td.tracexp .sub { margin-top: 6px; }
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 8px;
+  position: relative; /* offsetTop for bin-strip jumps */
 }
 .traceread .divmark { box-shadow: -2.5px 0 0 var(--warn); }
+
+/* windowed-mean strip above a long trace: per-bin mean Δ, click to jump */
+.binstrip { display: flex; gap: 1px; height: 14px; margin-bottom: 6px; }
+.binstrip .bin { flex: 1; min-width: 2px; border-radius: 1px; cursor: pointer; opacity: 0.85; }
+.binstrip .bin:hover { outline: 1px solid var(--muted); opacity: 1; }
+.binstrip .binmark { box-shadow: 0 0 0 1.5px var(--warn); }
+
+/* question text under the row-id cell in the divergence table */
+.qcell { font-family: inherit; max-width: 320px; margin-top: 3px; }
+
+/* the paid counterfactual probe under an expanded divergence row */
+.branch { margin-top: 12px; }
+.branch .pos-in {
+  width: 80px; font: inherit; font-size: 12px; padding: 3px 7px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; color: var(--text);
+}
+.branchcols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+.branchcols pre {
+  white-space: pre-wrap; font-size: 11.5px; line-height: 1.6;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px; margin: 0;
+  max-height: 220px; overflow: auto;
+}
 
 .qtext {
   white-space: pre-wrap;
