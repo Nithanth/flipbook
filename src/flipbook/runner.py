@@ -208,19 +208,28 @@ async def evaluate_async(
     }
     tot_in = sum(len(prompt_ints[r]) for r, miss in todo.items() if miss)
 
-    if forecast:
-        prior = _prior_gen_mean(store, manifest.manifest_hash, cfg.effort)
-        est_gen = int(
-            (prior[0] if prior else GEN_TOKEN_EST.get(round(cfg.effort or 0.0, 2), 1500)) * cells
+    prior = _prior_gen_mean(store, manifest.manifest_hash, cfg.effort)
+    est_gen = int(
+        (prior[0] if prior else GEN_TOKEN_EST.get(round(cfg.effort or 0.0, 2), 1500)) * cells
+    )
+    disc = list_ = None
+    if resolved.base_model in PRICES:
+        disc = estimate_usd(resolved.base_model, "prefill", tot_in) + estimate_usd(
+            resolved.base_model, "sample", est_gen
         )
-        disc = list_ = None
-        if resolved.base_model in PRICES:
-            disc = estimate_usd(resolved.base_model, "prefill", tot_in) + estimate_usd(
-                resolved.base_model, "sample", est_gen
-            )
-            list_ = estimate_usd(resolved.base_model, "prefill", tot_in, list_price=True) + estimate_usd(
-                resolved.base_model, "sample", est_gen, list_price=True
-            )
+        list_ = estimate_usd(resolved.base_model, "prefill", tot_in, list_price=True) + estimate_usd(
+            resolved.base_model, "sample", est_gen, list_price=True
+        )
+    forecast_line = (
+        f"forecast: {cells} cells · {tot_in:,} prompt tok · ~{est_gen:,} gen tok "
+        f"(prior: {'store' if prior else 'table'})"
+        + (
+            f" · ~${disc:.3f} discount · ~${list_:.3f} list"
+            if disc is not None
+            else " · cost: unknown (no price table)"
+        )
+    )
+    if forecast:
         return RunSummary(
             run_id=rid,
             manifest_hash=manifest.manifest_hash,
@@ -238,6 +247,10 @@ async def evaluate_async(
                 usd_list=list_,
             ),
         )
+
+    # spend is always announced before the first paid call — the eval prints
+    # this even when the caller didn't ask for a dry run
+    log(forecast_line)
 
     # an injected client skips creating a new one, cfg.model still carries the path for identity and provenance
     client = sampling_client or (
