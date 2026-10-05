@@ -61,7 +61,14 @@ def create_app(store_path: str | Path) -> FastAPI:
 
     @app.get("/api/runs")
     def runs(study: str | None = None) -> list[dict]:
-        return json.loads(json.dumps([_norm_run(r) for r in store.runs(study)], default=str))
+        out = []
+        for r in store.runs(study):
+            r = _norm_run(r)
+            t = store.samples(r["run_id"])
+            vs = [v for v in t.column("verdict").to_pylist() if v is not None]
+            r["acc"] = sum(vs) / len(vs) if vs else None
+            out.append(r)
+        return json.loads(json.dumps(out, default=str))
 
     @app.get("/api/runs/{run_id}/samples")
     def samples(run_id: str, full: bool = False) -> list[dict]:
@@ -100,7 +107,7 @@ def create_app(store_path: str | Path) -> FastAPI:
         if not mrow:
             raise HTTPException(404, f"no row {row} in manifest for run {a}")
         keep = {"sample_idx", "text", "gen_tokens", "stop_reason",
-                "verdict", "extracted", "failure_kind"}
+                "verdict", "extracted", "failure_kind", "grade_note"}
 
         def side(rid: str) -> list[dict]:
             run = next((r for r in store.runs() if r["run_id"] == rid), None) or {}

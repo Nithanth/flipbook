@@ -122,6 +122,15 @@ GRADERS: dict[str, tuple[GraderFn, str]] = {
 
 _REGEX_PREFIX = "regex:"
 
+# graders whose job is to pull an answer out of free text — extracted=None
+# means "nothing to grade" (parse failure). Predicate/custom graders return
+# extracted=None on a legitimate verdict-0, which is "failed", not "parse".
+_EXTRACTION = {"gsm8k", "math500", "aime", "number", "boxed"}
+
+
+def extracts_answer(grader_id: str) -> bool:
+    return grader_id in _EXTRACTION or grader_id.startswith(_REGEX_PREFIX)
+
 
 def _grade_regex(grader_id: str, text: str, gold: str) -> Grade:
     try:

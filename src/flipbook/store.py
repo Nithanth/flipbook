@@ -36,7 +36,7 @@ SAMPLES = pa.schema(
         ("stop_reason", pa.string()),
         ("verdict", pa.float64()),  # null on error
         ("extracted", pa.string()),
-        ("failure_kind", pa.string()),  # null|truncation|empty|parse|wrong_answer|error
+        ("failure_kind", pa.string()),  # null|truncation|empty|parse|failed|wrong_answer|error
         ("grade_note", pa.string()),
         ("error", pa.string()),
         ("est_cost_usd", pa.float64()),

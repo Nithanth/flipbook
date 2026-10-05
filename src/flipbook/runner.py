@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from flipbook.config import RunConfig, config_fp, run_id
-from flipbook.graders import grade, is_empty_response
+from flipbook.graders import extracts_answer, grade, is_empty_response
 from flipbook.lint import Finding, lint
 from flipbook.manifest import Manifest
 from flipbook.pricing import PRICES, estimate_usd
@@ -103,7 +103,8 @@ def _prompt_ints(renderer, renderer_name: str, messages: list[dict], effort: flo
 
 
 def _failure_kind(
-    verdict: float, extracted: str | None, stop_reason: str, text: str | None
+    verdict: float, extracted: str | None, stop_reason: str, text: str | None,
+    grader_id: str | None = None,
 ) -> str | None:
     # precedence: a correct answer is never a failure, truncation only counts
     # when it caused the failure, and an empty message is not a parse failure
@@ -114,7 +115,12 @@ def _failure_kind(
     if is_empty_response(text):
         return "empty"
     if extracted is None:
-        return "parse"
+        # WHY the grader matters: for extraction graders (boxed, regex…) a
+        # None means nothing parseable was produced; predicate and judge
+        # graders legitimately return extracted=None on a plain wrong answer,
+        # which is "failed" — calling it "parse" mislabels constraint
+        # violations as unparseable output
+        return "parse" if (grader_id is None or extracts_answer(grader_id)) else "failed"
     return "wrong_answer"
 
 
@@ -302,7 +308,7 @@ async def evaluate_async(
                     "run_id": rid, "row_id": row["row_id"], "sample_idx": i,
                     "text": text, "prompt_tokens": len(toks), "gen_tokens": len(seq.tokens),
                     "stop_reason": seq.stop_reason, "verdict": verdict,
-                    "extracted": extracted, "failure_kind": _failure_kind(verdict, extracted, seq.stop_reason, text),
+                    "extracted": extracted, "failure_kind": _failure_kind(verdict, extracted, seq.stop_reason, text, row["grader_id"]),
                     "grade_note": note, "error": None, "est_cost_usd": est,
                     "token_ids": list(seq.tokens), "token_logprobs": list(seq.logprobs) if seq.logprobs else None,
                 }

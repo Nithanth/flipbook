@@ -103,10 +103,17 @@ def _print_findings(findings) -> int:
     return 2 if any(f.level == "error" for f in findings) else 0
 
 
+_RUN_REF_EPILOG = "run refs: run_id, unique id prefix, 'study/label', or a unique label"
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="flipbook")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser("freeze", help="freeze a benchmark subset into a manifest")
+    p = sub.add_parser(
+        "freeze", help="freeze a benchmark subset into a manifest",
+        epilog="--from-jsonl rows: {'question'|'messages', 'gold', 'grader_id'} — "
+               "graders: builtins, 'regex:<pat>', 'module.path:fn', or 'path/file.py:fn'",
+    )
     p.add_argument("--benchmark", action="append", required=True,
                    help="name:n, repeatable; with --from-jsonl, a single bare name")
     p.add_argument("--from-jsonl", default=None,
@@ -133,17 +140,17 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("runs", help="list runs in the store")
     p.add_argument("--study")
     _add_store(p)
-    p = sub.add_parser("budget", help="token/cost distribution for a run")
+    p = sub.add_parser("budget", help="token/cost distribution for a run", epilog=_RUN_REF_EPILOG)
     p.add_argument("run")
     _add_store(p)
-    p = sub.add_parser("show", help="inspect one row's samples in a run")
+    p = sub.add_parser("show", help="inspect one row's samples in a run", epilog=_RUN_REF_EPILOG)
     p.add_argument("run", help="run id, prefix, study/label, or label")
     p.add_argument("row", help="row id or unique prefix (of id or hash suffix)")
     p.add_argument("--sample", type=int, default=None, help="only this sample index")
     p.add_argument("--full", action="store_true", help="print full text, not the tail")
     p.add_argument("--thinking", action="store_true", help="decode thinking from token_ids")
     _add_store(p)
-    p = sub.add_parser("compare", help="paired stats between two runs")
+    p = sub.add_parser("compare", help="paired stats between two runs", epilog=_RUN_REF_EPILOG)
     p.add_argument("run_a")
     p.add_argument("run_b")
     p.add_argument("--gate", action="store_true", help="exit 2 on a significant regression")
@@ -152,13 +159,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--json", action="store_true")
     p.add_argument("--markdown", action="store_true")
     _add_store(p)
-    p = sub.add_parser("diverge", help="per-token logprob gap of ckpt vs base on base's traces")
+    p = sub.add_parser("diverge", help="per-token logprob gap of ckpt vs base on base's traces", epilog=_RUN_REF_EPILOG)
     p.add_argument("--base", required=True)
     p.add_argument("--ckpt", required=True)
     p.add_argument("--rows", choices=["flips", "all"], default="all")
     p.add_argument("--forecast", action="store_true")
     _add_store(p)
-    p = sub.add_parser("effort", help="effort-prefix gap for one run's traces")
+    p = sub.add_parser("effort", help="effort-prefix gap for one run's traces", epilog=_RUN_REF_EPILOG)
     p.add_argument("--run", required=True)
     p.add_argument("--pair", required=True, help="e_low,e_high")
     p.add_argument("--forecast", action="store_true")
@@ -276,11 +283,22 @@ def main(argv: list[str] | None = None) -> int:
         store = _store(args)
         step = lambda r: (r.get("train_step")
                           or (r.get("provenance") or {}).get("train_step_measured") or -1)
+        # manifest_hash -> name, so the table shows which eval each run targets
+        mnames = {
+            d["manifest_hash"]: d["name"]
+            for d in (
+                json.loads(f.read_text())
+                for f in sorted((store.path / "manifests").glob("*.json"))
+            )
+        }
+        print(f"{'run':<12}  {'label':<12} {'study':<12} {'manifest':<14} "
+              f"{'effort':<6} {'k':<3} {'model'}")
         for r in sorted(store.runs(args.study),
                         key=lambda x: (x.get("study") or "", step(x))):
             label = r.get("label") or "-"
-            print(f"{r['run_id'][:12]}  {label:<10} {r.get('study') or '-':<14} "
-                  f"effort={r.get('effort')} k={r.get('k')} {r.get('model_id') or ''}")
+            print(f"{r['run_id'][:12]}  {label:<12} {(r.get('study') or '-'):<12} "
+                  f"{mnames.get(r.get('manifest_hash'), (r.get('manifest_hash') or '-')[:12]):<14} "
+                  f"{r.get('effort')!s:<6} {r.get('k')!s:<3} {r.get('model_id') or ''}")
         return 0
     if args.cmd == "show":
         store = _store(args)
@@ -337,8 +355,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "compare":
         store = _store(args)
-        rec_a = _run_rec(store, args.run_a)
-        pair = compare(store, rec_a["run_id"], _run_id(store, args.run_b))
+        pair = compare(
+            store, _run_id(store, args.run_a), _run_id(store, args.run_b)
+        )
         compat = pair.comparability
         if compat.get("blocks"):
             for msg in compat["blocks"]:
@@ -346,13 +365,6 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         for msg in compat.get("warnings", []):
             print(f"warning: {msg}", file=sys.stderr)
-        try:
-            q_by_row = {
-                r["row_id"]: question_text(r["messages"]).replace("\n", " ")[:60]
-                for r in store.manifest_rows(rec_a["manifest_hash"])
-            }
-        except FileNotFoundError:
-            q_by_row = {}
         kind_by_row = {
             rid: k for k, rids in pair.failure_rows_b.items() for rid in rids
         }
@@ -370,7 +382,7 @@ def main(argv: list[str] | None = None) -> int:
                   f"| a_only {a['a_only']} b_only {a['b_only']} |")
             print(f"\n{pair.n_pairs} paired rows, {len(pair.excluded)} excluded")
             for f in pair.flips:
-                q = f" — {q_by_row[f['row_id']]}" if f["row_id"] in q_by_row else ""
+                q = f" — {f['q']}" if f.get("q") else ""
                 print(f"- {'**HARD** ' if f['hard'] else ''}{f['kind']}: "
                       f"`{f['row_id']}` {f['p_a']:.2f} → {f['p_b']:.2f}{q}")
         else:
@@ -392,7 +404,7 @@ def main(argv: list[str] | None = None) -> int:
                 tag = "HARD " if f["hard"] else ""
                 kind = kind_by_row.get(f["row_id"])
                 tail = f"  b:{kind}" if kind else ""
-                q = f"  {q_by_row[f['row_id']]!r}" if f["row_id"] in q_by_row else ""
+                q = f"  {f['q']!r}" if f.get("q") else ""
                 print(f"  {tag}{f['kind']}: {f['row_id']}  {f['p_a']:.2f} → {f['p_b']:.2f}{tail}{q}")
             for e in pair.excluded:
                 print(f"  excluded {e['row_id']}: {e['reason']}")

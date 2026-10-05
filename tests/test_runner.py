@@ -35,6 +35,12 @@ def test_failure_kind_ordering():
     assert _failure_kind(0.0, "x", "length", "x") == "truncation"
     assert _failure_kind(0.0, None, "stop", "I give up") == "parse"
     assert _failure_kind(0.0, "x", "stop", "x") == "wrong_answer"
+    # extraction graders failing to extract → parse; predicate/judge graders
+    # returning extracted=None on a legit failure → failed
+    assert _failure_kind(0.0, None, "stop", "I give up", "aime") == "parse"
+    assert _failure_kind(0.0, None, "stop", "I give up", "regex:\\d+") == "parse"
+    assert _failure_kind(0.0, None, "stop", "I give up", "exact") == "failed"
+    assert _failure_kind(0.0, None, "stop", "I give up", "my.py:judge") == "failed"
     # an end-of-message-only generation is empty, not unparseable
     assert _failure_kind(0.0, None, "stop", "<|content_model_end_sampling|>") == "empty"
     assert _failure_kind(0.0, None, "stop", "") == "empty"

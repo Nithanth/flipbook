@@ -213,6 +213,9 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
   const [open, setOpen] = useState<string | null>(null);
   // failure_kind -> highlighted chip rows; null = no filter
   const [filter, setFilter] = useState<string | null>(null);
+  const [qFilter, setQFilter] = useState("");
+  const [onlyChanged, setOnlyChanged] = useState(false);
+  const [copied, setCopied] = useState(false);
   const failKinds = [
     ...new Set([...Object.keys(pair.failures.a), ...Object.keys(pair.failures.b)]),
   ].sort();
@@ -366,14 +369,40 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
               every question
             </Tip>
           </h2>
+          <div className="gridcontrols">
+            <input
+              className="qfilter"
+              placeholder="filter questions…"
+              value={qFilter}
+              onChange={(e) => setQFilter(e.target.value)}
+            />
+            <label className="sub">
+              <input
+                type="checkbox"
+                checked={onlyChanged}
+                onChange={(e) => setOnlyChanged(e.target.checked)}
+              />{" "}
+              only changed
+            </label>
+          </div>
           <div className="chipgrid">
             {pair.cells.map((c) => {
               const hit =
                 filter != null &&
                 (pair.failure_rows_b?.[filter] ?? []).includes(c.row_id);
+              const qHit =
+                qFilter.trim() === "" ||
+                (c.q ?? c.row_id).toLowerCase().includes(qFilter.trim().toLowerCase());
               const dp =
                 c.p_a != null && c.p_b != null ? c.p_b - c.p_a : null;
+              const changedHit =
+                !onlyChanged ||
+                c.cell === "a_only" ||
+                c.cell === "b_only" ||
+                (dp != null && dp !== 0);
               const hard = c.cell === "a_only" || c.cell === "b_only";
+              const dim =
+                (filter != null && !hit) || !qHit || !changedHit;
               const bg =
                 c.cell === "excluded" || dp == null || (dp === 0 && c.cell === "both_wrong")
                   ? undefined
@@ -389,11 +418,11 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
                     dp === 0 && c.cell === "both_wrong" ? " flatwrong" : ""
                   }${
                     hard ? (c.cell === "b_only" ? " hard_up" : " hard_dn") : ""
-                  }${filter != null && !hit ? " dim" : ""}${hit ? " hit" : ""}${
+                  }${dim ? " dim" : ""}${hit ? " hit" : ""}${
                     open === c.row_id ? " open" : ""
                   }`}
                   style={bg ? { background: bg } : undefined}
-                  title={`${c.row_id} · ${c.p_a == null ? "—" : c.p_a.toFixed(2)} → ${c.p_b == null ? "—" : c.p_b.toFixed(2)}${hard ? " · status flip" : dp && dp !== 0 ? " · reliability shift" : ""}`}
+                  title={`${c.q ? c.q + "\n" : ""}${c.row_id} · ${c.p_a == null ? "—" : c.p_a.toFixed(2)} → ${c.p_b == null ? "—" : c.p_b.toFixed(2)}${hard ? " · status flip" : dp && dp !== 0 ? " · reliability shift" : ""}`}
                   onClick={() => setOpen(open === c.row_id ? null : c.row_id)}
                 />
               );
@@ -444,11 +473,32 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
 
       {pair.flips.length > 0 && (
         <>
-          <h2>questions that flipped</h2>
+          <h2>
+            questions that flipped{" "}
+            <button
+              className="theme-btn"
+              onClick={() => {
+                navigator.clipboard.writeText(
+                  JSON.stringify(
+                    pair.flips.map((f) => ({
+                      row_id: f.row_id, question: f.q, p_a: f.p_a,
+                      p_b: f.p_b, kind: f.kind, hard: f.hard,
+                    })),
+                    null,
+                    2,
+                  ),
+                );
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              }}
+            >
+              {copied ? "copied" : "copy as json"}
+            </button>
+          </h2>
           <table>
             <thead>
               <tr>
-                <th>row</th>
+                <th>question</th>
                 <th><Tip text="Base model's pass rate on this question across its k samples.">p(base)</Tip></th>
                 <th><Tip text="Checkpoint's pass rate on this question across its k samples.">p(ckpt)</Tip></th>
                 <th><Tip text="regression = right→wrong, gain = wrong→right. (hard) = every sample flipped, not just a marginal one — the strongest evidence of a real change.">kind</Tip></th>
@@ -461,7 +511,9 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
                   className={`${f.kind} fliprow${open === f.row_id ? " fk-on" : ""}`}
                   onClick={() => setOpen(open === f.row_id ? null : f.row_id)}
                 >
-                  <td className="mono">{f.row_id}</td>
+                  <td title={f.q ?? f.row_id} style={{ maxWidth: 420 }}>
+                    {f.q ?? <span className="mono">{f.row_id}</span>}
+                  </td>
                   <td>{f.p_a.toFixed(2)}</td>
                   <td>{f.p_b.toFixed(2)}</td>
                   <td>
@@ -717,6 +769,14 @@ function SampleView({ s }: { s: RowSample }) {
           <Tip text="the final answer the grader extracted from the text, shown literally — the verdict compares it to the expected answer numerically, so '050' == '50'">
             extracted: <span className="ext" title={s.extracted ?? undefined}>{clamp(s.extracted ?? "—", 40)}</span>
           </Tip>
+          {s.grade_note && (
+            <>
+              {" · "}
+              <Tip text="what the grader reported — for custom graders and judges this is the reason the verdict was given">
+                <span className="muted" title={s.grade_note}>{clamp(s.grade_note, 50)}</span>
+              </Tip>
+            </>
+          )}
         </span>
       </div>
       {/* reserved row: every cell gets one toggles line so paired boxes
