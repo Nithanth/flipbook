@@ -78,7 +78,7 @@ export default function Compare() {
   const studyOf = (id: string) => runs.find((r) => r.run_id === id)?.study ?? null;
   const crossStudy =
     pair && studyOf(a) && studyOf(b) && studyOf(a) !== studyOf(b)
-      ? `cross-study comparison: ${studyOf(a)} vs ${studyOf(b)} — same questions, but different training runs/configs`
+      ? `cross-study comparison: ${studyOf(a)} vs ${studyOf(b)} - same questions, but different training runs/configs`
       : null;
   const warnings = [
     ...(crossStudy ? [crossStudy] : []),
@@ -95,11 +95,11 @@ export default function Compare() {
   return (
     <>
       <h1>compare</h1>
-      <p className="page-sub">two runs graded on the same frozen questions — what changed?</p>
+      <p className="page-sub">two runs graded on the same frozen questions - what changed?</p>
       <div className="row">
         <label>
           eval{" "}
-          <Tip text="The frozen question set both runs were graded on. Comparing across evals is meaningless — no paired rows — so the run pickers below only offer runs from this eval.">
+          <Tip text="The frozen question set both runs were graded on. Comparing across evals is meaningless - no paired rows - so the run pickers below only offer runs from this eval.">
             ?
           </Tip>{" "}
           <select value={mh} onChange={(e) => pickManifest(e.target.value)}>
@@ -210,7 +210,16 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
   const ag = pair.agreement;
   const labelA = runLabel(runs.find((r) => r.run_id === pair.run_a), pair.run_a);
   const labelB = runLabel(runs.find((r) => r.run_id === pair.run_b), pair.run_b);
-  const [open, setOpen] = useState<string | null>(null);
+  // ?row= deep link (from the divergence screen) opens that row's panel
+  const [open, setOpen] = useState<string | null>(() => {
+    const r = hashParams().get("row");
+    return r && (pair.cells ?? []).some((c) => c.row_id === r) ? r : null;
+  });
+  useEffect(() => {
+    if (open) document.getElementById("rowpanel")?.scrollIntoView({ block: "start" });
+    // mount-only: scroll once when a deep link opens a row
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // failure_kind -> highlighted chip rows; null = no filter
   const [filter, setFilter] = useState<string | null>(null);
   const [qFilter, setQFilter] = useState("");
@@ -256,7 +265,7 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
         <div className="card">
           <div className="big">{pair.flips.length}</div>
           <div className="sub">
-            <Tip text="Questions whose majority outcome changed between the two runs — regressions (was right, now wrong) vs gains.">
+            <Tip text="Questions whose majority outcome changed between the two runs - regressions (was right, now wrong) vs gains.">
               questions changed outcome
             </Tip>
             {" · "}
@@ -269,14 +278,14 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
             {pct(pair.truncation_rate_a)} → {pct(pair.truncation_rate_b)}
           </div>
           <div className="sub">
-            <Tip text="Share of responses that ran into the max-token cap mid-answer — a shape-of-failure signal, not a correctness one.">
+            <Tip text="Share of responses that ran into the max-token cap mid-answer - a shape-of-failure signal, not a correctness one.">
               hit token cap
             </Tip>
           </div>
         </div>
         <div className="card">
           <div className="big">
-            <Tip text="Average response length in generated tokens. A big paired shift means the output regime changed — rambling or collapsing — not just accuracy.">
+            <Tip text="Average response length in generated tokens. A big paired shift means the output regime changed - rambling or collapsing - not just accuracy.">
               {pair.tokens.a.mean.toFixed(0)} → {pair.tokens.b.mean.toFixed(0)}
             </Tip>
           </div>
@@ -317,7 +326,7 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
       {failKinds.length > 0 && (
         <>
           <h2>
-            <Tip text="Why the wrong samples were wrong: truncated at the token cap, no parseable answer, wrong answer, etc. This is the shape of the failure — the difference between 'degenerate outputs' and 'just wrong'. Click a kind to light up its rows in the grid below.">
+            <Tip text="Why the wrong samples were wrong: truncated at the token cap, no parseable answer, wrong answer, etc. This is the shape of the failure - the difference between 'degenerate outputs' and 'just wrong'. Click a kind to light up its rows in the grid below.">
               why samples failed
             </Tip>
           </h2>
@@ -422,7 +431,7 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
                     open === c.row_id ? " open" : ""
                   }`}
                   style={bg ? { background: bg } : undefined}
-                  title={`${c.q ? c.q + "\n" : ""}${c.row_id} · ${c.p_a == null ? "—" : c.p_a.toFixed(2)} → ${c.p_b == null ? "—" : c.p_b.toFixed(2)}${hard ? " · status flip" : dp && dp !== 0 ? " · reliability shift" : ""}`}
+                  title={`${c.q ? c.q + "\n" : ""}${c.row_id} · ${c.p_a == null ? "-" : c.p_a.toFixed(2)} → ${c.p_b == null ? "-" : c.p_b.toFixed(2)}${hard ? " · status flip" : dp && dp !== 0 ? " · reliability shift" : ""}`}
                   onClick={() => setOpen(open === c.row_id ? null : c.row_id)}
                 />
               );
@@ -442,7 +451,7 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
                 {flipsN} status flip{flipsN === 1 ? "" : "s"} · {softN} row
                 {softN === 1 ? "" : "s"} shifted reliability without flipping
                 {flipsN === 0 && softN === 0
-                  ? " — identical row-level outcomes"
+                  ? " - identical row-level outcomes"
                   : ""}
               </p>
             );
@@ -450,7 +459,7 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
           {filter != null && (
             <p className="sub">
               filtered by {filter.replace(/_/g, " ")} (
-              {(pair.failure_rows_b?.[filter] ?? []).length} rows) — click the kind
+              {(pair.failure_rows_b?.[filter] ?? []).length} rows) - click the kind
               again to clear
             </p>
           )}
@@ -466,7 +475,7 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
       )}
 
       {open && (
-        <div className="rowpanel">
+        <div className="rowpanel" id="rowpanel">
           <RowPanel pair={pair} row={open} labelA={labelA} labelB={labelB} />
         </div>
       )}
@@ -501,7 +510,7 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
                 <th>question</th>
                 <th><Tip text="Base model's pass rate on this question across its k samples.">p(base)</Tip></th>
                 <th><Tip text="Checkpoint's pass rate on this question across its k samples.">p(ckpt)</Tip></th>
-                <th><Tip text="regression = right→wrong, gain = wrong→right. (hard) = every sample flipped, not just a marginal one — the strongest evidence of a real change.">kind</Tip></th>
+                <th><Tip text="regression = right→wrong, gain = wrong→right. (hard) = every sample flipped, not just a marginal one - the strongest evidence of a real change.">kind</Tip></th>
               </tr>
             </thead>
             <tbody>
@@ -512,7 +521,7 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
                   onClick={() => setOpen(open === f.row_id ? null : f.row_id)}
                 >
                   <td title={f.q ?? f.row_id} style={{ maxWidth: 420 }}>
-                    {f.q ?? <span className="mono">{f.row_id}</span>}
+                    {f.q ? <div className="qcell-md"><Md text={f.q} /></div> : <span className="mono">{f.row_id}</span>}
                   </td>
                   <td>{f.p_a.toFixed(2)}</td>
                   <td>{f.p_b.toFixed(2)}</td>
@@ -550,11 +559,11 @@ function pct(x: number) {
   return `${(x * 100).toFixed(1)}%`;
 }
 
-/** Plain-English summary of the pair report — the numbers above, said once. */
+/** Plain-English summary of the pair report - the numbers above, said once. */
 function PairRead({ pair }: { pair: PairReport }) {
   const [lo, hi] = pair.delta_ci;
   const bullets: string[] = [
-    `accuracy ${pct(pair.acc_a)} → ${pct(pair.acc_b)}; Δ ${pair.delta >= 0 ? "+" : ""}${pair.delta.toFixed(3)} with 95% CI [${lo.toFixed(3)}, ${hi.toFixed(3)}] — ${
+    `accuracy ${pct(pair.acc_a)} → ${pct(pair.acc_b)}; Δ ${pair.delta >= 0 ? "+" : ""}${pair.delta.toFixed(3)} with 95% CI [${lo.toFixed(3)}, ${hi.toFixed(3)}] - ${
       hi < 0 || lo > 0
         ? "the CI excludes zero: this is a real change, not sampling noise"
         : "the CI includes zero: inconclusive at this sample size"
@@ -565,7 +574,7 @@ function PairRead({ pair }: { pair: PairReport }) {
   const gains = pair.flips.filter((f) => f.kind === "gain").length;
   if (pair.flips.length >= 3) {
     bullets.push(
-      `${regs} regressions vs ${gains} gains — ${
+      `${regs} regressions vs ${gains} gains - ${
         Math.min(regs, gains) <= 0.15 * Math.max(regs, gains)
           ? "one-directional, which sampling noise doesn't produce"
           : "roughly symmetric, consistent with noise"
@@ -577,13 +586,13 @@ function PairRead({ pair }: { pair: PairReport }) {
   const tb = pair.tokens.b.mean;
   if (Math.max(ta, tb) / Math.max(1, Math.min(ta, tb)) > 3) {
     bullets.push(
-      `mean response length ${ta.toFixed(0)} → ${tb.toFixed(0)} tokens — the output regime changed, not just the accuracy`,
+      `mean response length ${ta.toFixed(0)} → ${tb.toFixed(0)} tokens - the output regime changed, not just the accuracy`,
     );
   }
 
   if (Math.abs(pair.truncation_rate_b - pair.truncation_rate_a) > 0.2) {
     bullets.push(
-      `truncation ${pct(pair.truncation_rate_a)} → ${pct(pair.truncation_rate_b)} — ${
+      `truncation ${pct(pair.truncation_rate_a)} → ${pct(pair.truncation_rate_b)} - ${
         pair.truncation_rate_b > pair.truncation_rate_a
           ? "the checkpoint rambles into the token cap"
           : "the checkpoint stopped hitting the token cap"
@@ -608,7 +617,7 @@ function PairRead({ pair }: { pair: PairReport }) {
   return (
     <div className="card read">
       <div className="mini-label">
-        <Tip text="Plain sentences generated deterministically from the numbers above — thresholds and templates, no LLM involved.">
+        <Tip text="Plain sentences generated deterministically from the numbers above - thresholds and templates, no LLM involved.">
           takeaways
         </Tip>
       </div>
@@ -741,7 +750,7 @@ function SampleView({ s }: { s: RowSample }) {
           <span className="badge neg">✗ empty</span>{" "}
           <span className="sub">
             {s.gen_tokens.toLocaleString()} token{s.gen_tokens === 1 ? "" : "s"} · empty
-            response — the model emitted only the end-of-message token
+            response - the model emitted only the end-of-message token
           </span>
         </div>
         <div className="togglerow">
@@ -766,13 +775,13 @@ function SampleView({ s }: { s: RowSample }) {
             {s.stop_reason === "length" ? "truncated at cap" : "ended naturally"}
           </Tip>
           {" · "}
-          <Tip text="the final answer the grader extracted from the text, shown literally — the verdict compares it to the expected answer numerically, so '050' == '50'">
-            extracted: <span className="ext" title={s.extracted ?? undefined}>{clamp(s.extracted ?? "—", 40)}</span>
+          <Tip text="the final answer the grader extracted from the text, shown literally - the verdict compares it to the expected answer numerically, so '050' == '50'">
+            extracted: <span className="ext" title={s.extracted ?? undefined}>{clamp(s.extracted ?? "-", 40)}</span>
           </Tip>
           {s.grade_note && (
             <>
               {" · "}
-              <Tip text="what the grader reported — for custom graders and judges this is the reason the verdict was given">
+              <Tip text="what the grader reported - for custom graders and judges this is the reason the verdict was given">
                 <span className="muted" title={s.grade_note}>{clamp(s.grade_note, 50)}</span>
               </Tip>
             </>

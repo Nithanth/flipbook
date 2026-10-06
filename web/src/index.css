@@ -255,6 +255,11 @@ td.tracexp .sub { margin-top: 6px; }
   position: relative; /* offsetTop for bin-strip jumps */
 }
 .traceread .divmark { box-shadow: -2.5px 0 0 var(--warn); }
+.traceread .ctl { opacity: 0.4; }
+
+/* rendered-math question snippets inside table cells */
+.qcell .md, .qcell-md .md { font-size: inherit; line-height: inherit; }
+.qcell .md p, .qcell-md .md p { margin: 0; }
 
 /* windowed-mean strip above a long trace: per-bin mean Δ, click to jump */
 .binstrip { display: flex; gap: 1px; height: 14px; margin-bottom: 6px; }
@@ -308,9 +313,9 @@ td.tracexp .sub { margin-top: 6px; }
 .outtext .muted { opacity: .55; font-style: italic; }
 .lnk { color: var(--accent); cursor: pointer; }
 .lnk:hover { text-decoration: underline; }
-/* reserved toggles line under every sample meta — keeps paired boxes aligned */
+/* reserved toggles line under every sample meta - keeps paired boxes aligned */
 .togglerow { display: flex; gap: 6px; margin: 4px 0; min-height: 26px; }
-/* extracted answer as a small framed chip — echoes \boxed{} */
+/* extracted answer as a small framed chip - echoes \boxed{} */
 .ext {
   display: inline-block;
   max-width: 220px;

@@ -40,13 +40,13 @@ export default function Runs() {
         {sel.length === 2 &&
           (comparable ? (
             <>
-              {" — "}
+              {" - "}
               <a href={`#/compare?a=${sel[0]}&b=${sel[1]}`}>compare the selected pair →</a>
             </>
           ) : (
-            " — selected runs were graded on different manifests; they can't be paired"
+            " - selected runs were graded on different manifests; they can't be paired"
           ))}
-        {sel.length === 1 && " — select one more run on the same eval to compare"}
+        {sel.length === 1 && " - select one more run on the same eval to compare"}
       </p>
       {studies.map((s) => (
         <section key={s}>
@@ -88,7 +88,7 @@ export default function Runs() {
                     </td>
                     <td>{runLabel(r)}</td>
                     <td className="mono">
-                      {r.acc != null ? (r.acc as number).toFixed(2) : "—"}
+                      {r.acc != null ? (r.acc as number).toFixed(2) : "-"}
                     </td>
                     <td className="mono" title={r.model_id as string | undefined}>
                       {shortModel((r.model_id ?? r.model) as string | undefined)}

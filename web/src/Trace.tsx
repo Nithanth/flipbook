@@ -4,6 +4,10 @@ import { api, type BranchResult } from "./api";
 // same cumulative-nats threshold the backend's divergence_pos uses (diverge.TAU)
 const DIVERGE_TAU = 5.0;
 
+// renderer sentinels like <|content_thinking|> or {lt}x{gt} are real scored
+// tokens, but they're structure, not content - dim them
+const CTL = /^(<\|[^|]+\|>|\{lt\}.*\{gt\})$/;
+
 /** First token index where the cumulative Δlogprob crosses -TAU, else null. */
 export function firstDivPos(delta: number[]): number | null {
   let cum = 0;
@@ -24,7 +28,7 @@ export function Trace({
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const max = Math.max(1e-9, ...tokens.map((t) => Math.abs(t.d)));
-  // long traces wash out to uniform red — a windowed-mean strip above the text
+  // long traces wash out to uniform red - a windowed-mean strip above the text
   // keeps regional structure legible; clicking a bin scrolls the text to it
   const binN = Math.max(1, Math.ceil(tokens.length / 160));
   const bins: { start: number; mean: number }[] = [];
@@ -42,7 +46,7 @@ export function Trace({
   return (
     <>
       <div className="sub" style={{ marginBottom: 6 }}>
-        baseline trace colored by Δlogprob per token —{" "}
+        baseline trace colored by Δlogprob per token -{" "}
         <span style={{ color: "var(--neg)" }}>red</span> = ckpt less confident,{" "}
         <span style={{ color: "var(--accent)" }}>blue</span> = more confident
         {mark != null ? " · amber edge = first divergence" : ""}
@@ -53,7 +57,7 @@ export function Trace({
           <div
             key={i}
             className={`bin${mark != null && mark >= b.start && mark < b.start + binN ? " binmark" : ""}`}
-            title={`tokens ${b.start}–${Math.min(b.start + binN, tokens.length)}: mean Δ ${b.mean.toFixed(3)} nats`}
+            title={`tokens ${b.start}-${Math.min(b.start + binN, tokens.length)}: mean Δ ${b.mean.toFixed(3)} nats`}
             onClick={() => jump(b.start)}
             style={{
               background: `color-mix(in srgb, ${
@@ -70,7 +74,7 @@ export function Trace({
             <span
               key={i}
               data-tok={i % binN === 0 ? i : undefined}
-              className={i === mark ? "divmark" : undefined}
+              className={`${i === mark ? "divmark" : ""}${CTL.test(t.t) ? " ctl" : ""}` || undefined}
               style={{
                 background: `color-mix(in srgb, ${
                   t.d < 0 ? "var(--neg)" : "var(--accent)"
@@ -119,17 +123,21 @@ export function TraceView({
   return <Trace tokens={toks} mark={mark} />;
 }
 
-/** Delta sparkline: red = ckpt less confident than base, blue = more. */
+/** Delta sparkline: red = ckpt less confident than base, blue = more.
+ *  `n` is the real token count when `delta` arrived downsampled — it scales
+ *  the first-divergence tick. */
 export function Spark({
   delta,
   mark,
   w = 220,
   h = 28,
+  n,
 }: {
   delta: number[];
   mark: number | null;
   w?: number;
   h?: number;
+  n?: number;
 }) {
   if (!delta.length) return null;
   const step = Math.max(1, Math.floor(delta.length / w));
@@ -155,8 +163,8 @@ export function Spark({
       })}
       {mark != null && (
         <line
-          x1={(mark / delta.length) * w}
-          x2={(mark / delta.length) * w}
+          x1={(mark / (n ?? delta.length)) * w}
+          x2={(mark / (n ?? delta.length)) * w}
           y1={0}
           y2={h}
           style={{ stroke: "var(--warn)" }}
@@ -167,7 +175,7 @@ export function Spark({
   );
 }
 
-/** "What would the ckpt do instead?" — greedy ckpt sample from a cut on the
+/** "What would the ckpt do instead?" - greedy ckpt sample from a cut on the
  *  base's trace. The only paid interaction in the UI (~96 tokens/click). */
 export function BranchView({
   base,
@@ -223,7 +231,7 @@ export function BranchView({
         <button className="theme-btn" onClick={run} disabled={busy}>
           {busy ? "sampling…" : "branch ckpt here"}
         </button>
-        <span className="sub">greedy ckpt continuation, ~96 tokens — a paid call</span>
+        <span className="sub">greedy ckpt continuation, ~96 tokens - a paid call</span>
         {err && <span className="err">{err}</span>}
       </div>
       {res && (

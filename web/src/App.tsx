@@ -19,7 +19,7 @@ function initialTheme(): Theme {
   return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
 }
 
-/** Three cards fanning from a shared pivot — a page mid-flip, same as favicon. */
+/** Three cards fanning from a shared pivot - a page mid-flip, same as favicon. */
 function Logo() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">

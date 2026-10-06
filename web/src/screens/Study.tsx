@@ -19,7 +19,7 @@ export default function Study() {
     });
   }, []);
 
-  // default: the study with the most runs — that's the story, not the leftovers
+  // default: the study with the most runs - that's the story, not the leftovers
   useEffect(() => {
     if (study || !studies.length) return;
     const counts = new Map<string, number>();
@@ -71,7 +71,17 @@ export default function Study() {
         )}
       </div>
       {err && <p className="err">{err}</p>}
-      {detail && derived && (
+      {detail && derived && derived.rows.length === 0 && (
+        <div className="card read">
+          <div className="mini-label">no training metrics</div>
+          <p>
+            this study has {detail.runs.length} eval run{detail.runs.length === 1 ? "" : "s"} but no
+            tracked training loop - there's no step axis to chart. pair runs up in{" "}
+            <a href="#/compare">compare</a> or browse them under <a href="#/runs">runs</a>.
+          </p>
+        </div>
+      )}
+      {detail && derived && derived.rows.length > 0 && (
         <>
           <Hero d={derived} go={go} />
           <Narrative d={derived} />
@@ -178,7 +188,7 @@ function derive(detail: StudyDetail): Derived {
   return { rows, metricKeys: Object.keys(m), lossSeries, epochStarts };
 }
 
-/** pass1 (left axis) vs train loss (right axis) — the collision chart. */
+/** pass1 (left axis) vs train loss (right axis) - the collision chart. */
 function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
   const [hover, setHover] = useState<number | null>(null);
   const pts = d.rows.filter((r) => r.pass1 != null);
@@ -200,7 +210,7 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
     .map((r, i) => `${i ? "L" : "M"}${sx(r.step)},${syLoss(r.value)}`)
     .join(" ");
 
-  // snap to every logged step — evals are sparse, loss lands every step
+  // snap to every logged step - evals are sparse, loss lands every step
   const hoverSteps = [
     ...new Set([...pts.map((r) => r.step), ...d.lossSeries.map((s) => s.step)]),
   ].sort((a, b) => a - b);
@@ -271,7 +281,7 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
             strokeWidth={1.5}
             onClick={() => go(r.step)}
           >
-            <title>{`step ${r.step}: pass1 ${(r.pass1! * 100).toFixed(1)}% — click to compare`}</title>
+            <title>{`step ${r.step}: pass1 ${(r.pass1! * 100).toFixed(1)}% - click to compare`}</title>
           </circle>
         ))}
         {hover != null && (
@@ -332,13 +342,13 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
         <Tip text="Fraction of frozen eval questions answered correctly at this checkpoint (left axis). Click a point to compare that step against baseline.">
           <span style={{ color: "var(--accent)" }}>━ pass@1 (click a point)</span>
         </Tip>
-        <Tip text={`Training loss on the fine-tuning batches — what the optimizer sees (right axis). Logged every optimizer step (one batch); evals run every ${evalGap ?? "?"} steps. It can keep falling while eval behavior collapses; that's the collision this chart exists to show.`}>
+        <Tip text={`Training loss on the fine-tuning batches - what the optimizer sees (right axis). Logged every optimizer step (one batch); evals run every ${evalGap ?? "?"} steps. It can keep falling while eval behavior collapses; that's the collision this chart exists to show.`}>
           <span style={{ color: "var(--accent2)" }}>┅ train_mean_nll</span>
         </Tip>
       </div>
       <p className="sub" style={{ marginTop: 4 }}>
-        x = optimizer step (one training batch). nll is free — logged every step.
-        pass@1 is expensive — each dot is a full eval sweep
+        x = optimizer step (one training batch). nll is free - logged every step.
+        pass@1 is expensive - each dot is a full eval sweep
         {evalGap ? `, so it runs every ${evalGap} steps` : ""}; the gaps between
         blue dots are where this tool's job is.
       </p>
@@ -383,7 +393,7 @@ function ChartTip({
   );
 }
 
-/** Plain-English takeaway, derived from the step rows — the chart shows it, this says it. */
+/** Plain-English takeaway, derived from the step rows - the chart shows it, this says it. */
 function Narrative({ d }: { d: Derived }) {
   const evals = d.rows.filter((r) => r.pass1 != null);
   if (evals.length < 2) return null;
@@ -397,11 +407,11 @@ function Narrative({ d }: { d: Derived }) {
   if (peak.pass1! - trough.pass1! > 0.05) {
     bullets.push(
       `pass@1 peaked at ${pct(peak.pass1!)} (step ${peak.step}), then fell to ${pct(trough.pass1!)} by step ${trough.step}` +
-        (last.pass1! > trough.pass1! ? ` — ending at ${pct(last.pass1!)} (step ${last.step})` : ` and never recovered`),
+        (last.pass1! > trough.pass1! ? ` - ending at ${pct(last.pass1!)} (step ${last.step})` : ` and never recovered`),
     );
   } else {
     bullets.push(
-      `pass@1 stayed flat through training (${pct(evals[0].pass1!)} → ${pct(last.pass1!)}) — no eval-visible regression`,
+      `pass@1 stayed flat through training (${pct(evals[0].pass1!)} → ${pct(last.pass1!)}) - no eval-visible regression`,
     );
   }
 
@@ -410,7 +420,7 @@ function Narrative({ d }: { d: Derived }) {
   const divMove = evals.find((r) => r.div != null && r.div < -50);
   if (cliff && divMove && divMove.step < cliff.step) {
     bullets.push(
-      `divergence crossed −50 nats at step ${divMove.step} — ${cliff.step - divMove.step} steps before pass@1's first statistically significant drop (step ${cliff.step})`,
+      `divergence crossed −50 nats at step ${divMove.step} - ${cliff.step - divMove.step} steps before pass@1's first statistically significant drop (step ${cliff.step})`,
     );
   }
 
@@ -430,14 +440,14 @@ function Narrative({ d }: { d: Derived }) {
     const lo = gt.reduce((a, b) => (b.genTok! < a.genTok! ? b : a));
     if (hi.genTok! / Math.max(1, lo.genTok!) > 3)
       bullets.push(
-        `response length shifted ${(hi.genTok! / lo.genTok!).toFixed(0)}× (${hi.genTok!.toFixed(0)} → ${lo.genTok!.toFixed(0)} tokens) — the output regime changed, not just accuracy`,
+        `response length shifted ${(hi.genTok! / lo.genTok!).toFixed(0)}× (${hi.genTok!.toFixed(0)} → ${lo.genTok!.toFixed(0)} tokens) - the output regime changed, not just accuracy`,
       );
   }
 
   const tr = evals.filter((r) => r.trunc != null).reduce((a, b) => (b.trunc! > (a?.trunc ?? -1) ? b : a), evals[0]);
   if (tr?.trunc != null && tr.trunc > 0.25)
     bullets.push(
-      `truncation peaked at ${(tr.trunc * 100).toFixed(0)}% (step ${tr.step}) — the model was rambling into the token cap`,
+      `truncation peaked at ${(tr.trunc * 100).toFixed(0)}% (step ${tr.step}) - the model was rambling into the token cap`,
     );
 
   return (
@@ -462,8 +472,8 @@ function MetricStrip({
   go: (step: number) => void;
 }) {
   const cards: [string, string, (r: StepRow) => number | undefined, (v: number) => string][] = [
-    ["pass@k", "fraction of questions where at least one of the k samples was correct — the headroom above pass@1", (r) => r.passK, (v) => `${(v * 100).toFixed(1)}%`],
-    ["divergence (nats)", "How far the checkpoint's token probabilities moved from base on the baseline's own reasoning traces. ~0 = unchanged policy; very negative = the internals shifted hard — often before accuracy shows it.", (r) => r.div, (v) => v.toFixed(0)],
+    ["pass@k", "fraction of questions where at least one of the k samples was correct - the headroom above pass@1", (r) => r.passK, (v) => `${(v * 100).toFixed(1)}%`],
+    ["divergence (nats)", "How far the checkpoint's token probabilities moved from base on the baseline's own reasoning traces. ~0 = unchanged policy; very negative = the internals shifted hard - often before accuracy shows it.", (r) => r.div, (v) => v.toFixed(0)],
     ["mean gen tokens", "Average response length. A sudden drop or spike signals a degenerate output regime (rambling into the cap, or collapsing to short format-locked answers).", (r) => r.genTok, (v) => v.toFixed(0)],
     ["truncation", "Fraction of samples that hit the max-token cap before finishing. High truncation = the model rambles and never emits a final answer.", (r) => r.trunc, (v) => `${(v * 100).toFixed(0)}%`],
     ["effort gap (nats)", "Log-prob difference between effort=0.9 and effort=0.2 prompts on the same trace. Large = effort conditioning still modulates the model; ~0 = the dial is dead.", (r) => r.effortGap, (v) => v.toFixed(0)],
@@ -487,7 +497,7 @@ function MetricStrip({
             <div className="mini-val">
               {(() => {
                 const vs = d.rows.filter((r) => get(r) != null);
-                return vs.length ? fmt(get(vs[vs.length - 1])!) : "—";
+                return vs.length ? fmt(get(vs[vs.length - 1])!) : "-";
               })()}
             </div>
           </div>
@@ -563,7 +573,7 @@ function FocusChart({
           strokeWidth={1.5}
           onClick={() => go(p.x)}
         >
-          <title>{`step ${p.x}: ${fmt(p.y)} — click to compare`}</title>
+          <title>{`step ${p.x}: ${fmt(p.y)} - click to compare`}</title>
         </circle>
       ))}
       {hov && (
@@ -646,7 +656,7 @@ function StepTable({ d, runs }: { d: Derived; runs: Run[] }) {
           <tr>
             <th>step</th>
             <th><Tip text="Accuracy on the frozen eval manifest at this checkpoint.">pass@1</Tip></th>
-            <th><Tip text="fraction of questions where at least one of the k samples was correct — the headroom above pass@1">p@k</Tip></th>
+            <th><Tip text="fraction of questions where at least one of the k samples was correct - the headroom above pass@1">p@k</Tip></th>
             <th><Tip text="Paired per-question accuracy change vs baseline, with a bootstrap 95% CI over questions. Deltas inside the noise band (~±0.07 at n=30, k=2) are inconclusive.">Δ vs base</Tip></th>
             <th><Tip text="Questions that changed correctness vs baseline. R = right→wrong regressions, G = wrong→right gains. Noise flips are roughly symmetric; one-directional flips signal a real shift.">flips</Tip></th>
             <th><Tip text="Fraction of samples truncated at the max-token cap.">trunc</Tip></th>
@@ -668,23 +678,23 @@ function StepTable({ d, runs }: { d: Derived; runs: Run[] }) {
                 <td>
                   {link ? <a href={link}>step {r.step}</a> : `step ${r.step}`}
                 </td>
-                <td>{r.pass1 != null ? `${(r.pass1 * 100).toFixed(1)}%` : "—"}</td>
-                <td>{r.passK != null ? `${(r.passK * 100).toFixed(1)}%` : "—"}</td>
+                <td>{r.pass1 != null ? `${(r.pass1 * 100).toFixed(1)}%` : "-"}</td>
+                <td>{r.passK != null ? `${(r.passK * 100).toFixed(1)}%` : "-"}</td>
                 <td className={r.delta != null && r.delta < 0 ? "neg" : "pos"}>
                   {r.delta != null
                     ? `${r.delta >= 0 ? "+" : ""}${r.delta.toFixed(2)} [${r.ci?.[0].toFixed(2)}, ${r.ci?.[1].toFixed(2)}]`
-                    : "—"}
+                    : "-"}
                 </td>
                 <td>
-                  {r.regressions != null ? `${r.regressions}R/${r.gains}G` : "—"}
+                  {r.regressions != null ? `${r.regressions}R/${r.gains}G` : "-"}
                 </td>
-                <td>{r.trunc != null ? `${(r.trunc * 100).toFixed(0)}%` : "—"}</td>
-                <td>{r.genTok != null ? r.genTok.toFixed(0) : "—"}</td>
+                <td>{r.trunc != null ? `${(r.trunc * 100).toFixed(0)}%` : "-"}</td>
+                <td>{r.genTok != null ? r.genTok.toFixed(0) : "-"}</td>
                 <td className={r.div != null && r.div < -50 ? "neg" : ""}>
-                  {r.div != null ? r.div.toFixed(0) : "—"}
+                  {r.div != null ? r.div.toFixed(0) : "-"}
                 </td>
-                <td>{r.effortGap != null ? r.effortGap.toFixed(0) : "—"}</td>
-                <td>{r.cost != null ? `$${r.cost.toFixed(2)}` : "—"}</td>
+                <td>{r.effortGap != null ? r.effortGap.toFixed(0) : "-"}</td>
+                <td>{r.cost != null ? `$${r.cost.toFixed(2)}` : "-"}</td>
               </tr>
             );
           })}

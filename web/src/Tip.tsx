@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-/** Hover tooltip for metric jargon. CSS-only — the text rides in data-tip so no JS positioning is needed. */
+/** Hover tooltip for metric jargon. CSS-only - the text rides in data-tip so no JS positioning is needed. */
 export default function Tip({
   text,
   right,
