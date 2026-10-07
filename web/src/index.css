@@ -168,6 +168,15 @@ tr.gain td { color: var(--pos); }
 .read { margin: 14px 0 4px; border-left: 3px solid var(--accent); }
 .read p { margin: 6px 0 0; font-size: 13px; line-height: 1.55; }
 .read p::before { content: "· "; color: var(--accent); font-weight: 700; }
+.read p.verdict { font-weight: 600; color: var(--text); }
+.read p.verdict::before { content: "→ "; }
+
+/* hover markers fade in rather than pop */
+@keyframes hovin { from { opacity: 0; } }
+.hovmark { animation: hovin 90ms ease-out; }
+
+/* digits align in stat cards and tables */
+.card .big, td, th { font-variant-numeric: tabular-nums; }
 .chart.focus { margin-top: 12px; }
 
 .banner.warn {

@@ -139,6 +139,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--gold", required=True)
     p = sub.add_parser("runs", help="list runs in the store")
     p.add_argument("--study")
+    p.add_argument("--json", action="store_true")
     _add_store(p)
     p = sub.add_parser("budget", help="token/cost distribution for a run", epilog=_RUN_REF_EPILOG)
     p.add_argument("run")
@@ -149,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--sample", type=int, default=None, help="only this sample index")
     p.add_argument("--full", action="store_true", help="print full text, not the tail")
     p.add_argument("--thinking", action="store_true", help="decode thinking from token_ids")
+    p.add_argument("--json", action="store_true")
     _add_store(p)
     p = sub.add_parser("compare", help="paired stats between two runs", epilog=_RUN_REF_EPILOG)
     p.add_argument("run_a")
@@ -281,8 +283,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "runs":
         store = _store(args)
-        step = lambda r: (r.get("train_step")
-                          or (r.get("provenance") or {}).get("train_step_measured") or -1)
+        if args.json:
+            print(json.dumps(store.runs(args.study), indent=2, default=str))
+            return 0
+        def step(r):
+            return (r.get("train_step")
+                    or (r.get("provenance") or {}).get("train_step_measured") or -1)
         # manifest_hash -> name, so the table shows which eval each run targets
         mnames = {
             d["manifest_hash"]: d["name"]
@@ -307,16 +313,28 @@ def main(argv: list[str] | None = None) -> int:
             row = store.resolve_row(rec["manifest_hash"], args.row)
         except LookupError as e:
             raise SystemExit(str(e)) from e
-        print(f"run {rec['run_id']}  ({rec.get('study') or '-'}/{rec.get('label') or '-'})")
-        print(textwrap.fill("Q: " + question_text(row["messages"]), 100))
-        print(f"gold: {row['gold']!r}   grader: {row['grader_id']}")
-        from flipbook.decode import thinking
-
         tbl = store.samples(rec["run_id"])
         samples = sorted(
             (r for r in tbl.to_pylist() if r["row_id"] == row["row_id"]),
             key=lambda r: r["sample_idx"],
         )
+        if args.json:
+            print(json.dumps(
+                {
+                    "run_id": rec["run_id"],
+                    "study": rec.get("study"),
+                    "label": rec.get("label"),
+                    "row": row,
+                    "samples": samples,
+                },
+                indent=2, default=str,
+            ))
+            return 0
+        print(f"run {rec['run_id']}  ({rec.get('study') or '-'}/{rec.get('label') or '-'})")
+        print(textwrap.fill("Q: " + question_text(row["messages"]), 100))
+        print(f"gold: {row['gold']!r}   grader: {row['grader_id']}")
+        from flipbook.decode import thinking
+
         if not samples:
             print("  (no samples for this row)")
         for s in samples:
@@ -395,7 +413,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"flips: {len(pair.flips)}  "
                   f"truncation {pair.truncation_rate_a:.2f} → {pair.truncation_rate_b:.2f}  "
                   f"cost ${pair.cost_a:.3f} vs ${pair.cost_b:.3f}")
-            fk = lambda d: ", ".join(f"{k}×{v}" for k, v in sorted(d.items())) or "none"
+            def fk(d):
+                return ", ".join(f"{k}×{v}" for k, v in sorted(d.items())) or "none"
             print(f"failure kinds: a: {fk(pair.failures['a'])}   b: {fk(pair.failures['b'])}")
             for n in sorted(pair.passn, key=int):
                 e = pair.passn[n]

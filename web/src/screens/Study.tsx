@@ -202,6 +202,13 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
   const x0 = Math.min(...allSteps);
   const x1 = Math.max(...allSteps);
   const sx = (x: number) => pad + ((x - x0) / Math.max(1, x1 - x0)) * (w - 2 * pad);
+  // round tick spacing: smallest 1/2/5/8-ish step that yields <=6 ticks
+  const xSpan = Math.max(1, x1 - x0);
+  const tickStep =
+    [1, 2, 4, 5, 8, 10, 16, 20, 25, 32, 40, 50, 64, 80, 100, 128, 160, 200, 256, 320, 500, 640, 1000]
+      .find((t) => xSpan / t <= 6) ?? Math.ceil(xSpan / 6);
+  const xticks: number[] = [];
+  for (let x = Math.ceil(x0 / tickStep) * tickStep; x <= x1; x += tickStep) xticks.push(x);
   const syPass = (y: number) => h - pad - Math.max(0, Math.min(1, y)) * (h - 2 * pad);
   const syLoss = (y: number) => h - pad - (y / lossMax) * (h - 2 * pad);
 
@@ -243,8 +250,10 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
   return (
     <div className="hero">
       <svg
-        width={w}
-        height={h}
+        viewBox={`0 0 ${w} ${h}`}
+        width="100%"
+        height="auto"
+        preserveAspectRatio="xMidYMid meet"
         className="chart"
         onMouseMove={onMove}
         onMouseLeave={() => setHover(null)}
@@ -252,6 +261,14 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
         <line x1={pad} x2={w - pad} y1={h - pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
         <line x1={pad} x2={pad} y1={pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
         <line x1={w - pad} x2={w - pad} y1={pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
+        {/* mid gridline at 50% pass + x ticks */}
+        <line x1={pad} x2={w - pad} y1={syPass(0.5)} y2={syPass(0.5)} style={{ stroke: "var(--border)" }} strokeDasharray="2 5" strokeOpacity={0.7} />
+        {xticks.map((x) => (
+          <g key={x}>
+            <line x1={sx(x)} x2={sx(x)} y1={h - pad} y2={h - pad + 4} style={{ stroke: "var(--muted)" }} strokeOpacity={0.6} />
+            <text x={sx(x)} y={h - pad + 16} textAnchor="middle" fontSize={10} style={{ fill: "var(--muted)" }}>{x}</text>
+          </g>
+        ))}
         {d.epochStarts.map((s, i) => (
           <g key={s}>
             <line
@@ -270,7 +287,7 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
         {lossPath && (
           <path d={lossPath} fill="none" style={{ stroke: "var(--accent2)" }} strokeWidth={1.4} strokeDasharray="4 3" />
         )}
-        <path d={passPath} fill="none" style={{ stroke: "var(--accent)" }} strokeWidth={2} />
+        <path d={passPath} fill="none" style={{ stroke: "var(--accent)" }} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
         {pts.map((r) => (
           <circle
             key={r.step}
@@ -285,7 +302,7 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
           </circle>
         ))}
         {hover != null && (
-          <g pointerEvents="none">
+          <g pointerEvents="none" className="hovmark">
             <line
               x1={sx(hover)}
               x2={sx(hover)}
@@ -331,9 +348,7 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
         <text x={6} y={pad} style={{ fill: "var(--accent)" }} fontSize={11}>100%</text>
         <text x={6} y={h - pad} style={{ fill: "var(--accent)" }} fontSize={11}>0%</text>
         <text x={w - pad + 6} y={pad} style={{ fill: "var(--accent2)" }} fontSize={11}>{lossMax.toPrecision(2)}</text>
-        <text x={pad} y={h - 12} style={{ fill: "var(--muted)" }} fontSize={11}>{x0}</text>
-        <text x={w - pad - 20} y={h - 12} style={{ fill: "var(--muted)" }} fontSize={11}>{x1}</text>
-        <text x={w / 2} y={h - 12} textAnchor="middle" style={{ fill: "var(--muted)" }} fontSize={11}>
+        <text x={w / 2} y={h - 4} textAnchor="middle" style={{ fill: "var(--muted)" }} fontSize={11}>
           optimizer step →
         </text>
         <text x={w - pad + 6} y={h - pad} style={{ fill: "var(--accent2)" }} fontSize={11}>0</text>
@@ -404,6 +419,16 @@ function Narrative({ d }: { d: Derived }) {
   const after = evals.filter((r) => r.step >= peak.step);
   const trough = after.reduce((a, b) => (b.pass1! < a.pass1! ? b : a));
   const last = evals[evals.length - 1];
+  const first = evals[0];
+  const collapsed = peak.pass1! - trough.pass1! > 0.05 && last.pass1! < peak.pass1! - 0.05;
+  const improved = last.pass1! - first.pass1! > 0.05;
+  const verdict = collapsed
+    ? "the fine-tune regressed this eval"
+    : improved
+      ? "the fine-tune improved this eval"
+      : peak.pass1! - trough.pass1! > 0.05
+        ? "pass@1 dipped mid-training and recovered"
+        : "no eval-visible change";
   if (peak.pass1! - trough.pass1! > 0.05) {
     bullets.push(
       `pass@1 peaked at ${pct(peak.pass1!)} (step ${peak.step}), then fell to ${pct(trough.pass1!)} by step ${trough.step}` +
@@ -453,6 +478,7 @@ function Narrative({ d }: { d: Derived }) {
   return (
     <div className="card read">
       <div className="mini-label">the read</div>
+      <p className="verdict">{verdict}</p>
       {bullets.slice(0, 4).map((b) => (
         <p key={b}>{b}</p>
       ))}
@@ -477,7 +503,7 @@ function MetricStrip({
     ["mean gen tokens", "Average response length. A sudden drop or spike signals a degenerate output regime (rambling into the cap, or collapsing to short format-locked answers).", (r) => r.genTok, (v) => v.toFixed(0)],
     ["truncation", "Fraction of samples that hit the max-token cap before finishing. High truncation = the model rambles and never emits a final answer.", (r) => r.trunc, (v) => `${(v * 100).toFixed(0)}%`],
     ["effort gap (nats)", "Log-prob difference between effort=0.9 and effort=0.2 prompts on the same trace. Large = effort conditioning still modulates the model; ~0 = the dial is dead.", (r) => r.effortGap, (v) => v.toFixed(0)],
-    ["p_skip", "The model's own probability of ending the response immediately (end-of-message as the first token). Rising p_skip = it increasingly wants to emit nothing.", (r) => r.pSkip, (v) => v.toPrecision(2)],
+    ["skip prob", "The model's own probability of ending the response immediately (end-of-message as the first token). Rising = it increasingly wants to emit nothing.", (r) => r.pSkip, (v) => v.toPrecision(2)],
     ["eval cost", "Sampling cost of this eval point, in USD.", (r) => r.cost, (v) => `$${v.toFixed(2)}`],
   ];
   const sel = cards.find(([label]) => label === focus);
@@ -554,8 +580,10 @@ function FocusChart({
   };
   return (
     <svg
-      width={w}
-      height={h}
+      viewBox={`0 0 ${w} ${h}`}
+      width="100%"
+      height="auto"
+      preserveAspectRatio="xMidYMid meet"
       className="chart focus"
       onMouseMove={onMove}
       onMouseLeave={() => setHover(null)}
@@ -700,6 +728,7 @@ function StepTable({ d, runs }: { d: Derived; runs: Run[] }) {
           })}
         </tbody>
       </table>
+      <p className="sub" style={{ marginTop: 6 }}>- = not computed for this step (divergence and effort run on demand).</p>
     </>
   );
 }
