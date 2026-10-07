@@ -43,11 +43,61 @@ def _add_store(p: argparse.ArgumentParser) -> None:
                    help="store dir; env FLIPBOOK_STORE")
 
 
+def _completion_store(ns) -> Store:
+    return Store(getattr(ns, "store", None)
+                 or os.environ.get("FLIPBOOK_STORE", "./flipbook_store"))
+
+
+def _complete_run_ref(prefix, parsed_args, **kw):
+    """Every form resolve_run accepts: ids, labels, study/label."""
+    try:
+        refs = []
+        for r in _completion_store(parsed_args).runs():
+            refs.append(r["run_id"])
+            if r.get("label"):
+                refs.append(r["label"])
+                if r.get("study"):
+                    refs.append(f"{r['study']}/{r['label']}")
+        return refs
+    except Exception:  # noqa: BLE001 - a completer must never break the shell
+        return []
+
+
+def _complete_manifest(prefix, parsed_args, **kw):
+    try:
+        return [d["name"] for d in _completion_store(parsed_args).manifests()]
+    except Exception:  # noqa: BLE001 - a completer must never break the shell
+        return []
+
+
+def _complete_study(prefix, parsed_args, **kw):
+    try:
+        return sorted({r.get("study") for r in _completion_store(parsed_args).runs()} - {None})
+    except Exception:  # noqa: BLE001 - a completer must never break the shell
+        return []
+
+
+def _complete_row(prefix, parsed_args, **kw):
+    """Row ids for the run already typed; empty until it resolves."""
+    try:
+        store = _completion_store(parsed_args)
+        rec = store.resolve_run(parsed_args.run)
+        return [r["row_id"] for r in store.manifest_rows(rec["manifest_hash"])]
+    except Exception:  # noqa: BLE001 - a completer must never break the shell
+        return []
+
+
+def _complete_grader(prefix, parsed_args, **kw):
+    from flipbook.graders import GRADERS
+    return sorted(GRADERS)
+
+
 def _add_eval_args(p: argparse.ArgumentParser, required: bool = True) -> None:
     # lint --run reads model/manifest off the stored run record instead
     p.add_argument("--model", required=required,
                    help="'thinkingmachines/Inkling-Small', or 'tinker://<run>/sampler_weights/<ckpt>'")
-    p.add_argument("--manifest", required=required, help="manifest name or hash")
+    p.add_argument("--manifest", required=required, help="manifest name or hash"
+                   ).completer = _complete_manifest
     p.add_argument("--effort", type=float, default=None,
                    help="reasoning effort 0..1 (required by Inkling)")
     p.add_argument("--k", type=int, default=4, help="samples per question")
@@ -156,6 +206,11 @@ scripting
   output. eval prints a spend forecast before the first paid call;
   --forecast prints it without running.
 
+tab completion (argcomplete)
+  eval "$(register-python-argcomplete flipbook)"   # bash, or zsh with bashcompinit
+  run labels, manifest names, studies, grader ids, and row ids all
+  complete on <TAB>.
+
 migration helpers (rarely needed): import-evalstore, import-metrics
 """
 
@@ -195,36 +250,36 @@ def main(argv: list[str] | None = None) -> int:
     _add_store(p)
     p = Sub("lint", help="check a config or stored run")
     src = p.add_mutually_exclusive_group(required=True)
-    src.add_argument("--run")
+    src.add_argument("--run").completer = _complete_run_ref
     src.add_argument("--config", action="store_true")
     _add_eval_args(p, required=False)
     _add_store(p)
     p = Sub("graders", help="list registered grader ids")
     p = Sub("grade", help="dry-run a grader on one text")
     p.add_argument("text")
-    p.add_argument("--grader", required=True)
+    p.add_argument("--grader", required=True).completer = _complete_grader
     p.add_argument("--gold", required=True)
     p = Sub("manifests", help="list manifests in the store")
     p.add_argument("--json", action="store_true")
     _add_store(p)
     p = Sub("runs", help="list runs in the store")
-    p.add_argument("--study")
+    p.add_argument("--study").completer = _complete_study
     p.add_argument("--json", action="store_true")
     _add_store(p)
     p = Sub("budget", help="token/cost distribution for a run", epilog=_RUN_REF_EPILOG)
-    p.add_argument("run")
+    p.add_argument("run").completer = _complete_run_ref
     _add_store(p)
     p = Sub("show", help="inspect one row's samples in a run", epilog=_RUN_REF_EPILOG)
-    p.add_argument("run", help="run id, prefix, study/label, or label")
-    p.add_argument("row", help="row id or unique prefix (of id or hash suffix)")
+    p.add_argument("run", help="run id, prefix, study/label, or label").completer = _complete_run_ref
+    p.add_argument("row", help="row id or unique prefix (of id or hash suffix)").completer = _complete_row
     p.add_argument("--sample", type=int, default=None, help="only this sample index")
     p.add_argument("--full", action="store_true", help="print full text, not the tail")
     p.add_argument("--thinking", action="store_true", help="decode thinking from token_ids")
     p.add_argument("--json", action="store_true")
     _add_store(p)
     p = Sub("compare", help="paired stats between two runs", epilog=_RUN_REF_EPILOG)
-    p.add_argument("run_a")
-    p.add_argument("run_b")
+    p.add_argument("run_a").completer = _complete_run_ref
+    p.add_argument("run_b").completer = _complete_run_ref
     p.add_argument("--gate", action="store_true", help="exit 2 on a significant regression")
     p.add_argument("--max-regression", type=float, default=0.02)
     p.add_argument("--max-new-truncation-rate", type=float, default=0.0)
@@ -232,19 +287,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--markdown", action="store_true")
     _add_store(p)
     p = Sub("diverge", help="per-token logprob gap of ckpt vs base on base's traces", epilog=_RUN_REF_EPILOG)
-    p.add_argument("--base", required=True)
-    p.add_argument("--ckpt", required=True)
+    p.add_argument("--base", required=True).completer = _complete_run_ref
+    p.add_argument("--ckpt", required=True).completer = _complete_run_ref
     p.add_argument("--rows", choices=["flips", "all"], default="all")
     p.add_argument("--forecast", action="store_true")
     _add_store(p)
     p = Sub("effort", help="effort-prefix gap for one run's traces", epilog=_RUN_REF_EPILOG)
-    p.add_argument("--run", required=True)
+    p.add_argument("--run", required=True).completer = _complete_run_ref
     p.add_argument("--pair", required=True, help="e_low,e_high")
     p.add_argument("--forecast", action="store_true")
     _add_store(p)
     p = Sub("track", help="evaluate every checkpoint in a cookbook log dir")
     p.add_argument("log_dir")
-    p.add_argument("--manifest", required=True)
+    p.add_argument("--manifest", required=True).completer = _complete_manifest
     sel = p.add_mutually_exclusive_group()
     sel.add_argument("--every", type=int)
     sel.add_argument("--last", type=int)
@@ -279,6 +334,10 @@ def main(argv: list[str] | None = None) -> int:
     ]
     if argv is None:
         argv = sys.argv[1:]
+    # completion runs with argv empty - the typed line lives in COMP_LINE,
+    # so autocomplete must come before the bare-invocation help
+    import argcomplete  # lazy: only the completion path pays the import
+    argcomplete.autocomplete(ap)
     if not argv:
         ap.print_help()
         return 2

@@ -19,6 +19,10 @@ dry-runs a grader on one text.
 `flipbook compare` reports pass@n (unbiased estimator) for every n up to the
 smaller run's k.
 
+`flipbook guide` prints the full workflow. Tab completion via
+`eval "$(register-python-argcomplete flipbook)"` completes run labels,
+manifest names, studies, grader ids, and row ids.
+
 ## Development
 
 ```bash
