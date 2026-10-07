@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import functools
 import json
+import os
 import sys
 import textwrap
 
@@ -38,7 +39,8 @@ def _run_id(store: Store, ref: str) -> str:
 
 
 def _add_store(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--store", default="./flipbook_store")
+    p.add_argument("--store", default=os.environ.get("FLIPBOOK_STORE", "./flipbook_store"),
+                   help="store dir; env FLIPBOOK_STORE")
 
 
 def _add_eval_args(p: argparse.ArgumentParser, required: bool = True) -> None:
@@ -145,13 +147,16 @@ run refs
     label           baseline (if unique)
 
 store
-  ./flipbook_store by default; override per command with --store.
-  everything is local parquet + json - inspectable with duckdb or pandas.
+  ./flipbook_store by default; override per command with --store or
+  set FLIPBOOK_STORE. everything is local parquet + json - inspectable
+  with duckdb or pandas. 'flipbook manifests' lists what's frozen.
 
 scripting
-  runs, show, and compare take --json for machine-readable output.
-  eval prints a spend forecast before the first paid call; --forecast
-  prints it without running.
+  manifests, runs, show, and compare take --json for machine-readable
+  output. eval prints a spend forecast before the first paid call;
+  --forecast prints it without running.
+
+migration helpers (rarely needed): import-evalstore, import-metrics
 """
 
 
@@ -162,7 +167,7 @@ def main(argv: list[str] | None = None) -> int:
         epilog="the short version:\n  freeze -> eval -> compare -> serve\n\n"
                "'flipbook guide' prints a full walkthrough.",
     )
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub = ap.add_subparsers(dest="cmd", required=True, metavar="cmd")
     Sub = functools.partial(sub.add_parser, formatter_class=_Fmt)
     sub.add_parser("guide", help="print a walkthrough of the whole workflow")
     p = Sub(
@@ -199,6 +204,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("text")
     p.add_argument("--grader", required=True)
     p.add_argument("--gold", required=True)
+    p = Sub("manifests", help="list manifests in the store")
+    p.add_argument("--json", action="store_true")
+    _add_store(p)
     p = Sub("runs", help="list runs in the store")
     p.add_argument("--study")
     p.add_argument("--json", action="store_true")
@@ -264,6 +272,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8484)
     _add_store(p)
+    # keep migration helpers out of the top-level list; they still run
+    sub._choices_actions = [
+        a for a in sub._choices_actions
+        if a.dest not in ("import-evalstore", "import-metrics")
+    ]
     if argv is None:
         argv = sys.argv[1:]
     if not argv:
@@ -350,6 +363,18 @@ def main(argv: list[str] | None = None) -> int:
             print(e, file=sys.stderr)
             return 2
         print(f"verdict={g.verdict} extracted={g.extracted!r} note={g.note}")
+        return 0
+    if args.cmd == "manifests":
+        store = _store(args)
+        docs = store.manifests()
+        if args.json:
+            print(json.dumps(docs, indent=2, default=str))
+            return 0
+        print(f"{'name':<16}  {'hash':<12} {'rows':>5}  {'created'}")
+        for d in docs:
+            print(f"{d['name']:<16}  {d['manifest_hash'][:12]}  "
+                  f"{d.get('n_rows', len(d.get('rows', []))):>5}  "
+                  f"{str(d.get('created_at', '-'))[:10]}")
         return 0
     if args.cmd == "runs":
         store = _store(args)
