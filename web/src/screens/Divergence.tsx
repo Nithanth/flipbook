@@ -1,14 +1,9 @@
 import { useEffect, useState } from "react";
-import { api, type DivergenceRow, type Run } from "../api";
+import { api, type DivergencePair as Pair, type DivergenceRow, type Run } from "../api";
 import Tip from "../Tip";
 import { BranchView, Spark, TraceView } from "../Trace";
 import Md from "../Md";
 import { runLabel } from "../runLabel";
-
-interface Pair {
-  base: string;
-  ckpt: string;
-}
 
 export default function Divergence() {
   const [pairs, setPairs] = useState<Pair[]>([]);
@@ -67,7 +62,7 @@ export default function Divergence() {
               {pairs.map((p) => (
                 <option key={`${p.base}__${p.ckpt}`} value={`${p.base}__${p.ckpt}`}>
                   {label(p.base)} → {label(p.ckpt)}
-                  {p.base === p.ckpt ? " (noise floor)" : ""}
+                  {p.self ? " (noise floor)" : ""}
                 </option>
               ))}
             </select>
@@ -78,14 +73,27 @@ export default function Divergence() {
         </div>
       )}
       {err && <p className="err">{err}</p>}
-      {rows && <PairRead rows={rows} self={sel.split("__")[0] === sel.split("__")[1]} />}
       {rows && (
+        <PairRead
+          rows={rows}
+          self={sel.split("__")[0] === sel.split("__")[1]}
+          floor={pairs.find((p) => `${p.base}__${p.ckpt}` === sel)?.noise_floor ?? null}
+        />
+      )}
+      {rows && (() => {
+        // when ~every row departs at token 0-2 the column is dead - fold it into the read
+        const early = rows.filter((r) => r.divergence_pos != null);
+        const collapseDiv =
+          early.length >= rows.length * 0.8 && early.every((r) => r.divergence_pos! <= 2);
+        return (
         <table>
           <thead>
             <tr>
               <th>row</th>
               <th><Tip text="Total log-prob shift of the checkpoint vs base, summed over every token of the baseline's own trace. Negative = the checkpoint finds this trace less likely.">Σ nats</Tip></th>
-              <th><Tip text="Token position where the two models' per-token log-probs first diverge materially - roughly where the checkpoint starts reasoning differently.">first div</Tip></th>
+              {!collapseDiv && (
+                <th><Tip text="Token position where the two models' per-token log-probs first diverge materially - roughly where the checkpoint starts reasoning differently.">first div</Tip></th>
+              )}
               <th><Tip text="Probability of ending the response at token 0 (emit nothing), base → checkpoint. A jump means the checkpoint wants to skip the question entirely.">p_skip</Tip></th>
               <th><Tip text="Per-token log-prob delta along the baseline trace, compressed to a sparkline. Red bars = checkpoint less confident than base there; the amber tick marks first divergence.">trace</Tip></th>
             </tr>
@@ -119,7 +127,7 @@ export default function Divergence() {
                   <td className={r.sum_nats < 0 ? "neg" : "pos"}>
                     {r.sum_nats.toFixed(1)}
                   </td>
-                  <td>{r.divergence_pos ?? "-"}</td>
+                  {!collapseDiv && <td>{r.divergence_pos ?? "-"}</td>}
                   <td>
                     {r.p_skip_base.toFixed(3)} → {r.p_skip_ckpt.toFixed(3)}
                   </td>
@@ -129,7 +137,7 @@ export default function Divergence() {
                 </tr>,
                 isOpen && (
                   <tr key={`${key}-x`}>
-                    <td colSpan={5} className="tracexp">
+                    <td colSpan={collapseDiv ? 4 : 5} className="tracexp">
                       <TraceView
                         base={sel.split("__")[0]}
                         ckpt={sel.split("__")[1]}
@@ -160,13 +168,22 @@ export default function Divergence() {
             })}
           </tbody>
         </table>
-      )}
+        );
+      })()}
     </>
   );
 }
 
 /** Pair-level "the read": what the deltas collectively say before you open a row. */
-function PairRead({ rows, self }: { rows: DivergenceRow[]; self: boolean }) {
+function PairRead({
+  rows,
+  self,
+  floor,
+}: {
+  rows: DivergenceRow[];
+  self: boolean;
+  floor: number | null;
+}) {
   if (!rows.length) return null;
   const n = rows.length;
   const med = (xs: number[]) => xs.slice().sort((a, b) => a - b)[Math.floor(xs.length / 2)];
@@ -188,7 +205,17 @@ function PairRead({ rows, self }: { rows: DivergenceRow[]; self: boolean }) {
             : "the checkpoint assigns these baseline traces substantially different probability"
         }`,
       ];
-  if (fracs.length >= 2) {
+  if (!self && floor != null && Math.abs(medSum) > floor * 3) {
+    bullets.push(
+      `instrument floor |Σ| ≤ ${floor.toFixed(1)} nats (same checkpoint rescored) - this pair is far above scoring noise`,
+    );
+  }
+  const early = rows.filter((r) => r.divergence_pos != null);
+  if (early.length >= n * 0.8 && early.every((r) => r.divergence_pos! <= 2)) {
+    bullets.push(
+      `departure begins at token 0-2 on ${early.length}/${n} rows - the checkpoint disagrees from the first generated token, not mid-reasoning`,
+    );
+  } else if (fracs.length >= 2) {
     const f = med(fracs);
     bullets.push(
       `divergence typically begins ${(f * 100).toFixed(0)}% into the trace - the checkpoint ${

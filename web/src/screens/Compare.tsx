@@ -194,7 +194,7 @@ function RunPicker({
                     disabled={!!why}
                     title={why ? `cannot compare: ${why}` : undefined}
                   >
-                    {runLabel(r)} · k={r.k ?? "?"} · {r.run_id.slice(0, 8)}
+                    {runLabel(r)} · k={r.k ?? "?"}
                     {why ? ` (${why})` : ""}
                   </option>
                 );

@@ -178,21 +178,34 @@ def create_app(store_path: str | Path) -> FastAPI:
         d = store.path / "divergence"
         if not d.exists():
             return []
-        return [
-            {"base": f.stem.split("__")[0], "ckpt": f.stem.split("__")[1]}
-            for f in sorted(d.glob("*.parquet"))
-        ]
+        out = []
+        for f in sorted(d.glob("*.parquet")):
+            base, ckpt = f.stem.split("__")
+            sums = _divergence(base, ckpt).column("sum_nats").to_pylist()
+            out.append({
+                "base": base,
+                "ckpt": ckpt,
+                "self": base == ckpt,
+                "median_nats": sorted(sums)[len(sums) // 2] if sums else 0.0,
+                "max_abs_nats": max((abs(x) for x in sums), default=0.0),
+            })
+        floor = max((p["max_abs_nats"] for p in out if p["self"]), default=None)
+        for p in out:
+            p["noise_floor"] = floor
+        # most-diverged real pairs first; the A/A noise floor sorts last
+        out.sort(key=lambda p: (p["self"], -abs(p["median_nats"])))
+        return out
 
     @app.get("/api/divergence")
     def divergence(base: str = Query(...), ckpt: str = Query(...)) -> list[dict]:
         f = store.path / "divergence" / f"{base}__{ckpt}.parquet"
         if not f.exists():
             raise HTTPException(404, f"no divergence for {base} vs {ckpt}")
-        from flipbook.manifest import question_text
+        from flipbook.manifest import question_text, truncate_q
 
         run = next((r for r in _run_list() if r["run_id"] == base), {})
         qtext = {
-            r["row_id"]: question_text(r["messages"]).replace("\n", " ")[:120]
+            r["row_id"]: truncate_q(question_text(r["messages"]))
             for r in _mrows(run.get("manifest_hash") or "")
         }
         # lp arrays are per-row drill-down data (trace/branch fetch them on

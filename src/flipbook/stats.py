@@ -189,10 +189,10 @@ def compare(store: Store, run_a: str, run_b: str) -> PairReport:
     mh = runs.get(run_a, {}).get("manifest_hash")
     if mh:
         try:
-            from flipbook.manifest import question_text
+            from flipbook.manifest import question_text, truncate_q
 
             q_by_row = {
-                r["row_id"]: question_text(r["messages"]).replace("\n", " ")[:80]
+                r["row_id"]: truncate_q(question_text(r["messages"]), 80)
                 for r in store.manifest_rows(mh)
             }
         except FileNotFoundError:

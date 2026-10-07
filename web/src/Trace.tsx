@@ -31,12 +31,19 @@ export function Trace({
   // long traces wash out to uniform red - a windowed-mean strip above the text
   // keeps regional structure legible; clicking a bin scrolls the text to it
   const binN = Math.max(1, Math.ceil(tokens.length / 160));
-  const bins: { start: number; mean: number }[] = [];
+  const bins: { start: number; mean: number; sum: number }[] = [];
   for (let i = 0; i < tokens.length; i += binN) {
     const seg = tokens.slice(i, i + binN);
-    bins.push({ start: i, mean: seg.reduce((a, t) => a + t.d, 0) / seg.length });
+    const sum = seg.reduce((a, t) => a + t.d, 0);
+    bins.push({ start: i, mean: sum / seg.length, sum });
   }
   const binMax = Math.max(1e-9, ...bins.map((b) => Math.abs(b.mean)));
+  // cumulative Σ overlay: where the nat mass accumulates (early cliff vs
+  // uniform drift), which per-window means alone can't show
+  let run = 0;
+  const cum = bins.map((b) => (run += b.sum));
+  const cumMin = Math.min(0, ...cum);
+  const cumSpan = Math.max(1e-9, Math.max(0, ...cum) - cumMin);
   const jump = (start: number) => {
     const el = wrapRef.current?.querySelector(`[data-tok="${start}"]`);
     if (el instanceof HTMLElement && wrapRef.current) {
@@ -53,6 +60,15 @@ export function Trace({
         {" · strip = mean Δ per window, click to jump"}
       </div>
       <div className="binstrip">
+        <svg className="cumline" viewBox={`0 0 ${bins.length} 1`} preserveAspectRatio="none" aria-hidden>
+          <polyline
+            points={cum.map((v, i) => `${i + 0.5},${(0.9 - ((v - cumMin) / cumSpan) * 0.8).toFixed(3)}`).join(" ")}
+            fill="none"
+            style={{ stroke: "var(--text)" }}
+            strokeWidth={1.5}
+            vectorEffect="non-scaling-stroke"
+          />
+        </svg>
         {bins.map((b, i) => (
           <div
             key={i}

@@ -271,7 +271,8 @@ td.tracexp .sub { margin-top: 6px; }
 .qcell .md p, .qcell-md .md p { margin: 0; }
 
 /* windowed-mean strip above a long trace: per-bin mean Δ, click to jump */
-.binstrip { display: flex; gap: 1px; height: 14px; margin-bottom: 6px; }
+.binstrip { display: flex; gap: 1px; height: 14px; margin-bottom: 6px; position: relative; }
+.binstrip .cumline { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: 0.7; }
 .binstrip .bin { flex: 1; min-width: 2px; border-radius: 1px; cursor: pointer; opacity: 0.85; }
 .binstrip .bin:hover { outline: 1px solid var(--muted); opacity: 1; }
 .binstrip .binmark { box-shadow: 0 0 0 1.5px var(--warn); }

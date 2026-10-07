@@ -88,7 +88,7 @@ export default function Runs() {
                     </td>
                     <td>{runLabel(r)}</td>
                     <td className="mono">
-                      {r.acc != null ? (r.acc as number).toFixed(2) : "-"}
+                      {r.acc != null ? `${((r.acc as number) * 100).toFixed(0)}%` : "-"}
                     </td>
                     <td className="mono" title={r.model_id as string | undefined}>
                       {shortModel((r.model_id ?? r.model) as string | undefined)}

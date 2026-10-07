@@ -44,6 +44,20 @@ def question_text(messages: list[dict]) -> str:
     return next(m["content"] for m in reversed(messages) if m["role"] == "user")
 
 
+def truncate_q(s: str, n: int = 120) -> str:
+    """UI-safe question snippet: break on whitespace and never leave an open
+    math delimiter, which would make the rendered tail show raw LaTeX."""
+    s = s.replace("\n", " ")
+    if len(s) <= n:
+        return s
+    cut = s[:n].rsplit(" ", 1)[0]
+    if cut.count("$") % 2:
+        cut = cut.rsplit("$", 1)[0]
+    if cut.count("\\[") > cut.count("\\]"):
+        cut = cut.rsplit("\\[", 1)[0]
+    return cut.rstrip(" ,;:-") + "…"
+
+
 def make_row_id(benchmark: str, question: str) -> str:
     return f"{benchmark}:{hashlib.sha256(question.encode()).hexdigest()[:12]}"
 

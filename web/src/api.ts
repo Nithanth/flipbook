@@ -26,6 +26,15 @@ export interface Manifest {
   [k: string]: unknown;
 }
 
+export interface DivergencePair {
+  base: string;
+  ckpt: string;
+  self: boolean;
+  median_nats: number;
+  max_abs_nats: number;
+  noise_floor: number | null;
+}
+
 export interface Flip {
   row_id: string;
   p_a: number;
@@ -182,7 +191,7 @@ export const api = {
     ),
   divergence: (base: string, ckpt: string) =>
     get<DivergenceRow[]>(`/api/divergence?base=${base}&ckpt=${ckpt}`),
-  divergencePairs: () => get<{ base: string; ckpt: string }[]>("/api/divergence/pairs"),
+  divergencePairs: () => get<DivergencePair[]>("/api/divergence/pairs"),
   divergenceTrace: (base: string, ckpt: string, row: string, sample: number) =>
     get<{ tokens: { t: string; d: number }[] }>(
       `/api/divergence/trace?base=${base}&ckpt=${ckpt}&row=${encodeURIComponent(row)}&sample=${sample}`,
