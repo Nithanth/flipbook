@@ -4,6 +4,7 @@
 
 import argparse
 import asyncio
+import functools
 import json
 import sys
 import textwrap
@@ -42,17 +43,19 @@ def _add_store(p: argparse.ArgumentParser) -> None:
 
 def _add_eval_args(p: argparse.ArgumentParser, required: bool = True) -> None:
     # lint --run reads model/manifest off the stored run record instead
-    p.add_argument("--model", required=required)
-    p.add_argument("--manifest", required=required)
-    p.add_argument("--effort", type=float, default=None)
-    p.add_argument("--k", type=int, default=4)
+    p.add_argument("--model", required=required,
+                   help="'thinkingmachines/Inkling-Small', or 'tinker://<run>/sampler_weights/<ckpt>'")
+    p.add_argument("--manifest", required=required, help="manifest name or hash")
+    p.add_argument("--effort", type=float, default=None,
+                   help="reasoning effort 0..1 (required by Inkling)")
+    p.add_argument("--k", type=int, default=4, help="samples per question")
     p.add_argument("--temperature", type=float, default=0.7)
     p.add_argument("--max-tokens", type=int, default=32768)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--renderer", default=None)
+    p.add_argument("--renderer", default=None, help="renderer override, e.g. tml_v0")
     p.add_argument("--base-model", default=None, help="offline override for tinker:// resolution")
-    p.add_argument("--label", default=None)
-    p.add_argument("--study", default=None)
+    p.add_argument("--label", default=None, help="short name for this run, e.g. 'baseline' or 'step56'")
+    p.add_argument("--study", default=None, help="grouping name - runs in a study chart together")
 
 
 async def _resolve(args) -> tuple[str, str]:
@@ -106,10 +109,63 @@ def _print_findings(findings) -> int:
 _RUN_REF_EPILOG = "run refs: run_id, unique id prefix, 'study/label', or a unique label"
 
 
+class _Fmt(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
+    pass
+
+
+_GUIDE = """\
+workflow
+  1. freeze    build a manifest: frozen questions + golds + grader_ids
+  2. eval      sample a model over it (a spend forecast prints first)
+  3. compare   paired stats and flips between two runs
+  4. diverge   per-token logprob gap of a checkpoint on base traces
+  5. serve     read-only API + browser UI over the store
+
+walkthrough
+  flipbook freeze --benchmark aime2026:30 --name aime30
+  flipbook eval --model thinkingmachines/Inkling-Small \\
+      --manifest aime30 --effort 0.5 --label baseline
+  flipbook eval --model tinker://<run>/sampler_weights/final \\
+      --manifest aime30 --effort 0.5 --study sft --label step56
+  flipbook compare baseline sft/step56
+  flipbook show sft/step56 <row_id>
+  flipbook diverge --base baseline --ckpt sft/step56
+  flipbook serve
+
+during training
+  flipbook track <cookbook run dir> --manifest aime30 --study sft
+  evaluates every checkpoint under a cookbook log dir and groups the runs
+  into a study - that is what powers the study chart and 'the read'.
+
+run refs
+  anywhere a run is taken, any of these works:
+    run_id          013ccbd2f51d...
+    prefix          013ccb   (if unique)
+    study/label     sft/step56
+    label           baseline (if unique)
+
+store
+  ./flipbook_store by default; override per command with --store.
+  everything is local parquet + json - inspectable with duckdb or pandas.
+
+scripting
+  runs, show, and compare take --json for machine-readable output.
+  eval prints a spend forecast before the first paid call; --forecast
+  prints it without running.
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="flipbook")
+    ap = argparse.ArgumentParser(
+        prog="flipbook",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="the short version:\n  freeze -> eval -> compare -> serve\n\n"
+               "'flipbook guide' prints a full walkthrough.",
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser(
+    Sub = functools.partial(sub.add_parser, formatter_class=_Fmt)
+    sub.add_parser("guide", help="print a walkthrough of the whole workflow")
+    p = Sub(
         "freeze", help="freeze a benchmark subset into a manifest",
         epilog="--from-jsonl rows: {'question'|'messages', 'gold', 'grader_id'} — "
                "graders: builtins, 'regex:<pat>', 'module.path:fn', or 'path/file.py:fn'",
@@ -121,30 +177,36 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--name", required=True)
     _add_store(p)
-    p = sub.add_parser("eval", help="run a config over a manifest")
+    p = Sub(
+        "eval", help="run a config over a manifest",
+        epilog="example: flipbook eval --model thinkingmachines/Inkling-Small "
+               "--manifest aime30 --effort 0.5 --label baseline\n"
+               "a spend forecast prints before the first paid call; "
+               "--forecast prints it and exits.",
+    )
     _add_eval_args(p)
     p.add_argument("--forecast", action="store_true")
     p.add_argument("--concurrency", type=int, default=8)
     _add_store(p)
-    p = sub.add_parser("lint", help="check a config or stored run")
+    p = Sub("lint", help="check a config or stored run")
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--run")
     src.add_argument("--config", action="store_true")
     _add_eval_args(p, required=False)
     _add_store(p)
-    p = sub.add_parser("graders", help="list registered grader ids")
-    p = sub.add_parser("grade", help="dry-run a grader on one text")
+    p = Sub("graders", help="list registered grader ids")
+    p = Sub("grade", help="dry-run a grader on one text")
     p.add_argument("text")
     p.add_argument("--grader", required=True)
     p.add_argument("--gold", required=True)
-    p = sub.add_parser("runs", help="list runs in the store")
+    p = Sub("runs", help="list runs in the store")
     p.add_argument("--study")
     p.add_argument("--json", action="store_true")
     _add_store(p)
-    p = sub.add_parser("budget", help="token/cost distribution for a run", epilog=_RUN_REF_EPILOG)
+    p = Sub("budget", help="token/cost distribution for a run", epilog=_RUN_REF_EPILOG)
     p.add_argument("run")
     _add_store(p)
-    p = sub.add_parser("show", help="inspect one row's samples in a run", epilog=_RUN_REF_EPILOG)
+    p = Sub("show", help="inspect one row's samples in a run", epilog=_RUN_REF_EPILOG)
     p.add_argument("run", help="run id, prefix, study/label, or label")
     p.add_argument("row", help="row id or unique prefix (of id or hash suffix)")
     p.add_argument("--sample", type=int, default=None, help="only this sample index")
@@ -152,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--thinking", action="store_true", help="decode thinking from token_ids")
     p.add_argument("--json", action="store_true")
     _add_store(p)
-    p = sub.add_parser("compare", help="paired stats between two runs", epilog=_RUN_REF_EPILOG)
+    p = Sub("compare", help="paired stats between two runs", epilog=_RUN_REF_EPILOG)
     p.add_argument("run_a")
     p.add_argument("run_b")
     p.add_argument("--gate", action="store_true", help="exit 2 on a significant regression")
@@ -161,18 +223,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--json", action="store_true")
     p.add_argument("--markdown", action="store_true")
     _add_store(p)
-    p = sub.add_parser("diverge", help="per-token logprob gap of ckpt vs base on base's traces", epilog=_RUN_REF_EPILOG)
+    p = Sub("diverge", help="per-token logprob gap of ckpt vs base on base's traces", epilog=_RUN_REF_EPILOG)
     p.add_argument("--base", required=True)
     p.add_argument("--ckpt", required=True)
     p.add_argument("--rows", choices=["flips", "all"], default="all")
     p.add_argument("--forecast", action="store_true")
     _add_store(p)
-    p = sub.add_parser("effort", help="effort-prefix gap for one run's traces", epilog=_RUN_REF_EPILOG)
+    p = Sub("effort", help="effort-prefix gap for one run's traces", epilog=_RUN_REF_EPILOG)
     p.add_argument("--run", required=True)
     p.add_argument("--pair", required=True, help="e_low,e_high")
     p.add_argument("--forecast", action="store_true")
     _add_store(p)
-    p = sub.add_parser("track", help="evaluate every checkpoint in a cookbook log dir")
+    p = Sub("track", help="evaluate every checkpoint in a cookbook log dir")
     p.add_argument("log_dir")
     p.add_argument("--manifest", required=True)
     sel = p.add_mutually_exclusive_group()
@@ -191,18 +253,26 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--forecast", action="store_true")
     p.add_argument("--concurrency", type=int, default=8)
     _add_store(p)
-    p = sub.add_parser("import-evalstore", help="import a legacy eval bundle into the store")
+    p = Sub("import-evalstore", help="import a legacy eval bundle into the store")
     p.add_argument("path")
     _add_store(p)
-    p = sub.add_parser("import-metrics", help="import metrics.jsonl from a cookbook log dir")
+    p = Sub("import-metrics", help="import metrics.jsonl from a cookbook log dir")
     p.add_argument("log_dir")
     p.add_argument("--study", required=True)
     _add_store(p)
-    p = sub.add_parser("serve", help="read-only API + GUI over the store")
+    p = Sub("serve", help="read-only API + GUI over the store")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8484)
     _add_store(p)
+    if argv is None:
+        argv = sys.argv[1:]
+    if not argv:
+        ap.print_help()
+        return 2
     args = ap.parse_args(argv)
+    if args.cmd == "guide":
+        print(_GUIDE)
+        return 0
     if args.cmd == "freeze":
         if args.from_jsonl:
             if len(args.benchmark) != 1 or ":" in args.benchmark[0]:
