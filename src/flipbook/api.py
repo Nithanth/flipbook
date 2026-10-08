@@ -370,7 +370,40 @@ def create_app(store_path: str | Path) -> FastAPI:
     return app
 
 
-def serve(store_path: str | Path, host: str = "127.0.0.1", port: int = 8484) -> None:
+def load_env_file(path: Path) -> list[str]:
+    """Export KEY=VALUE lines from a dotenv file into os.environ; returns the
+    names set. Existing values win - never overrides what the shell gave us."""
+    import os
+
+    if not path.exists():
+        return []
+    names = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k = k.strip().removeprefix("export ").strip()
+        if k and k not in os.environ:
+            os.environ[k] = v.strip().strip("'\"")
+            names.append(k)
+    return names
+
+
+def serve(
+    store_path: str | Path,
+    host: str = "127.0.0.1",
+    port: int = 8484,
+    open_browser: bool = True,
+) -> None:
+    import threading
+    import webbrowser
+
     import uvicorn
 
+    url = f"http://{host}:{port}"
+    if open_browser:
+        # fire after bind; a short timer is simpler than wiring a uvicorn
+        # startup hook for a one-shot convenience
+        threading.Timer(0.8, webbrowser.open, args=(url,)).start()
     uvicorn.run(create_app(store_path), host=host, port=port)

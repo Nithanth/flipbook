@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import textwrap
+from pathlib import Path
 
 from flipbook.budget import budget
 from flipbook.config import RunConfig
@@ -182,7 +183,13 @@ walkthrough
   flipbook compare baseline sft/step56
   flipbook show sft/step56 <row_id>
   flipbook diverge --base baseline --ckpt sft/step56
-  flipbook serve
+  flipbook serve      # opens the GUI at localhost:8484
+
+inspecting
+  the GUI is a read-only view over the store directory - nothing lives
+  in the server. kill it, move the store, serve it again: same results.
+  the one paid action (branch probe) needs TINKER_API_KEY; serve loads
+  ~/.secrets/tinker.env if it exists.
 
 during training
   flipbook track <cookbook run dir> --manifest aime30 --study sft
@@ -326,6 +333,11 @@ def main(argv: list[str] | None = None) -> int:
     p = Sub("serve", help="read-only API + GUI over the store")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8484)
+    p.add_argument("--no-open", action="store_true", help="don't open the browser")
+    p.add_argument(
+        "--env-file", default="~/.secrets/tinker.env",
+        help="dotenv loaded if present (TINKER_API_KEY for the branch probe)",
+    )
     _add_store(p)
     # keep migration helpers out of the top-level list; they still run
     sub._choices_actions = [
@@ -643,9 +655,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"imported {n} metric rows for study {args.study}")
         return 0
     if args.cmd == "serve":
-        from flipbook.api import serve
-        print(f"serving {args.store} at http://{args.host}:{args.port}")
-        serve(args.store, host=args.host, port=args.port)
+        from flipbook.api import load_env_file, serve
+        loaded = load_env_file(Path(args.env_file).expanduser())
+        if loaded:
+            print(f"loaded {', '.join(loaded)} from {args.env_file}", flush=True)
+        print(f"serving {args.store} at http://{args.host}:{args.port}", flush=True)
+        serve(args.store, host=args.host, port=args.port, open_browser=not args.no_open)
         return 0
     return 1
 

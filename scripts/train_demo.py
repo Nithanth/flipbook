@@ -60,7 +60,7 @@ def build_config(args):
     common = ChatDatasetBuilderCommonConfig(
         model_name_for_tokenizer=MODEL,
         renderer_name=renderer_name,
-        max_length=2048,
+        max_length=args.max_length,
         batch_size=args.batch_size,
         train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
     )
@@ -75,9 +75,10 @@ def build_config(args):
             "renderer_name": renderer_name,
             "dataset_builder": builder,
             "learning_rate": args.lr,
-            "lr_schedule": "linear",
+            "lr_schedule": args.lr_schedule,
             "num_epochs": args.epochs,
-            "lora_rank": 32,
+            "max_steps": args.max_steps,
+            "lora_rank": args.lora_rank,
             "save_every": args.save_every,
             "eval_every": 0,
             # fires at step 0 (base weights) then every 8 steps
@@ -94,6 +95,14 @@ def build_config(args):
                     temperature=0.6,
                     max_tokens=32768,
                     diverge=args.diverge,
+                    # recorded into each run's provenance so the GUI can show
+                    # which knobs produced a checkpoint
+                    train_config={
+                        "lr": args.lr, "lr_schedule": args.lr_schedule,
+                        "epochs": args.epochs, "batch_size": args.batch_size,
+                        "lora_rank": args.lora_rank, "max_length": args.max_length,
+                        "max_steps": args.max_steps,
+                    },
                     effort_pair=(0.2, 0.9) if args.effort_pair else None,
                     study=args.study or args.log_dir.name,
                 )
@@ -147,6 +156,10 @@ def main() -> int:
     t.add_argument("--batch-size", type=int, default=32)
     t.add_argument("--epochs", type=int, default=2)
     t.add_argument("--lr", type=float, default=2e-4)
+    t.add_argument("--lr-schedule", choices=["linear", "cosine", "constant"], default="linear")
+    t.add_argument("--lora-rank", type=int, default=32)
+    t.add_argument("--max-length", type=int, default=2048)
+    t.add_argument("--max-steps", type=int, default=None)
     t.add_argument("--save-every", type=int, default=8)
     t.add_argument("--eval-every", type=int, default=8)
     t.add_argument("--k", type=int, default=4)

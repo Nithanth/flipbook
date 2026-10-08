@@ -136,33 +136,13 @@ export default function Divergence() {
                   </td>
                 </tr>,
                 isOpen && (
-                  <tr key={`${key}-x`}>
-                    <td colSpan={collapseDiv ? 4 : 5} className="tracexp">
-                      <TraceView
-                        base={sel.split("__")[0]}
-                        ckpt={sel.split("__")[1]}
-                        row={r.row_id}
-                        sample={r.sample_idx}
-                        delta={r.delta}
-                        mark={r.divergence_pos}
-                      />
-                      <div className="sub">
-                        {(r.n ?? r.delta.length).toLocaleString()} tokens · Σ {r.sum_nats.toFixed(1)} nats ·
-                        mean {r.mean_nats.toFixed(4)} nats/token
-                        {r.divergence_pos != null
-                          ? ` · first divergence at token ${r.divergence_pos.toLocaleString()}`
-                          : ""}
-                      </div>
-                      <BranchView
-                        base={sel.split("__")[0]}
-                        ckpt={sel.split("__")[1]}
-                        row={r.row_id}
-                        sample={r.sample_idx}
-                        pos={r.divergence_pos ?? r.win_argmin}
-                        nTokens={r.n ?? r.delta.length}
-                      />
-                    </td>
-                  </tr>
+                  <ExpandedRow
+                    key={`${key}-x`}
+                    colSpan={collapseDiv ? 4 : 5}
+                    base={sel.split("__")[0]}
+                    ckpt={sel.split("__")[1]}
+                    r={r}
+                  />
                 ),
               ];
             })}
@@ -238,5 +218,52 @@ function PairRead({
         <p key={b}>{b}</p>
       ))}
     </div>
+  );
+}
+
+/** Expanded row: the trace + the branch probe, sharing a "cut" position that
+ *  clicks on a token set. */
+function ExpandedRow({
+  colSpan,
+  base,
+  ckpt,
+  r,
+}: {
+  colSpan: number;
+  base: string;
+  ckpt: string;
+  r: DivergenceRow;
+}) {
+  const [cut, setCut] = useState<number | null>(r.divergence_pos ?? r.win_argmin);
+  return (
+    <tr>
+      <td colSpan={colSpan} className="tracexp">
+        <TraceView
+          base={base}
+          ckpt={ckpt}
+          row={r.row_id}
+          sample={r.sample_idx}
+          delta={r.delta}
+          mark={r.divergence_pos}
+          onPick={setCut}
+          cut={cut}
+        />
+        <div className="sub">
+          baseline sample {r.sample_idx} · {(r.n ?? r.delta.length).toLocaleString()} tokens ·
+          Σ {r.sum_nats.toFixed(1)} nats · mean {r.mean_nats.toFixed(4)} nats/token
+          {r.divergence_pos != null
+            ? ` · first divergence at token ${r.divergence_pos.toLocaleString()}`
+            : ""}
+        </div>
+        <BranchView
+          base={base}
+          ckpt={ckpt}
+          row={r.row_id}
+          sample={r.sample_idx}
+          pos={cut}
+          nTokens={r.n ?? r.delta.length}
+        />
+      </td>
+    </tr>
   );
 }

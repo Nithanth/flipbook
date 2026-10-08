@@ -302,6 +302,10 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
           <div className="sub">estimated cost</div>
         </div>
       </div>
+      <p className="sub" style={{ marginTop: 2 }}>
+        green/red = ckpt relative to base - swap the two pickers and every sign
+        flips. a regression here is "was right under base, wrong under ckpt".
+      </p>
 
       <PairRead pair={pair} />
 

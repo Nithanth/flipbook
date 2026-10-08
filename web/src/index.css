@@ -40,7 +40,7 @@ body {
   transition: background 120ms ease, color 120ms ease;
 }
 
-.app { max-width: 1080px; margin: 0 auto; padding: 0 24px 56px; }
+.app { max-width: 1320px; margin: 0 auto; padding: 0 24px 56px; }
 
 nav {
   display: flex;
@@ -50,7 +50,7 @@ nav {
   border-bottom: 1px solid var(--border);
   margin-bottom: 24px;
 }
-nav .brand { display: inline-flex; align-items: center; gap: 7px; font-weight: 650; letter-spacing: -0.01em; margin-right: 20px; font-size: 15px; color: var(--text); text-decoration: none; }
+nav .brand { display: inline-flex; align-items: center; gap: 8px; font-weight: 650; letter-spacing: -0.01em; margin-right: 24px; font-size: 17px; color: var(--text); text-decoration: none; }
 nav .brand:hover { color: var(--accent); }
 .page-sub { color: var(--muted); font-size: 12.5px; margin: -10px 0 8px; }
 nav a {
@@ -177,7 +177,9 @@ tr.gain td { color: var(--pos); }
 
 /* digits align in stat cards and tables */
 .card .big, td, th { font-variant-numeric: tabular-nums; }
-.chart.focus { margin-top: 12px; }
+.chart.focus { margin-top: 12px; animation: focus-in 180ms ease-out; }
+@keyframes focus-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.mini { transition: border-color 120ms ease; }
 
 .banner.warn {
   background: color-mix(in srgb, var(--warn) 12%, transparent);
@@ -253,9 +255,9 @@ td.tracexp .sub { margin-top: 6px; }
 .traceread {
   white-space: pre-wrap;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11.5px;
-  line-height: 1.75;
-  max-height: 360px;
+  font-size: 12.5px;
+  line-height: 1.9;
+  max-height: 460px;
   overflow: auto;
   padding: 12px 14px;
   background: var(--surface-2);
@@ -264,6 +266,8 @@ td.tracexp .sub { margin-top: 6px; }
   position: relative; /* offsetTop for bin-strip jumps */
 }
 .traceread .divmark { box-shadow: -2.5px 0 0 var(--warn); }
+.traceread .cutmark { box-shadow: 0 0 0 1.5px var(--accent); border-radius: 2px; }
+.traceread .pickable { cursor: crosshair; }
 .traceread .ctl { opacity: 0.4; }
 
 /* rendered-math question snippets inside table cells */
@@ -271,8 +275,14 @@ td.tracexp .sub { margin-top: 6px; }
 .qcell .md p, .qcell-md .md p { margin: 0; }
 
 /* windowed-mean strip above a long trace: per-bin mean Δ, click to jump */
-.binstrip { display: flex; gap: 1px; height: 14px; margin-bottom: 6px; position: relative; }
-.binstrip .cumline { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: 0.7; }
+.binstrip { display: flex; gap: 1px; height: 22px; margin-bottom: 6px; }
+.hotchips { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; margin-bottom: 6px; }
+.hotchip {
+  font: inherit; font-size: 12px; cursor: pointer;
+  color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 4px; padding: 1px 7px;
+}
+.hotchip:hover { border-color: var(--accent); }
 .binstrip .bin { flex: 1; min-width: 2px; border-radius: 1px; cursor: pointer; opacity: 0.85; }
 .binstrip .bin:hover { outline: 1px solid var(--muted); opacity: 1; }
 .binstrip .binmark { box-shadow: 0 0 0 1.5px var(--warn); }

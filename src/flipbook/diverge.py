@@ -48,12 +48,16 @@ def _run_rec(store: Store, run_id: str) -> dict:
 
 
 def _pos(delta: list[float], tau: float) -> int | None:
+    # require the trace to END below -tau, not just dip there: rescoring
+    # noise accumulates as a random walk (~sqrt(n)), so a fixed-threshold
+    # dip late in a long trace is instrument noise, not divergence
     cum = 0.0
+    first = None
     for i, d in enumerate(delta):
         cum += d
-        if cum <= -tau:
-            return i
-    return None
+        if first is None and cum <= -tau:
+            first = i
+    return first if cum <= -tau else None
 
 
 def _win_argmin(delta: list[float], w: int = WIN) -> int | None:

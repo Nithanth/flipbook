@@ -17,11 +17,41 @@ freezes one `{"question"|"messages", "gold", "grader_id"}` object per line
 dry-runs a grader on one text.
 
 `flipbook compare` reports pass@n (unbiased estimator) for every n up to the
-smaller run's k.
+smaller run's k, paired deltas with bootstrap CIs, and per-question flips.
+
+`flipbook diverge --base A --ckpt B` rescores the baseline's own sampled
+traces under the checkpoint: per-token `lp_ckpt − lp_base` in nats, plus the
+model's probability of emitting nothing (`p_skip`). This is how you see the
+internals move *before* accuracy does. `flipbook effort` measures whether the
+effort dial still modulates the model.
 
 `flipbook guide` prints the full workflow. Tab completion via
 `eval "$(register-python-argcomplete flipbook)"` completes run labels,
 manifest names, studies, grader ids, and row ids.
+
+## Inspecting
+
+```bash
+flipbook serve        # read-only GUI at localhost:8484, opens the browser
+```
+
+Everything lives in the store directory — the server owns no state, so a
+store can be moved, copied, or served anywhere. Four screens: **study** (one
+training run's checkpoints vs train loss — the "optimizer happy, eval broken"
+chart, with a plain-language read of what moved first), **runs** (per-run
+table with config provenance), **compare** (paired stats, CIs, flips),
+**divergence** (per-token disagreement heatmap over the baseline's traces,
+with a branch probe that asks "what would the checkpoint have said here?").
+
+During training, `flipbook track <cookbook log dir> --manifest M --study S`
+evaluates every checkpoint as it lands and groups the runs into a study —
+that's what the study screen draws. The GUI is strictly read-only: the CLI is
+the control panel (it forecasts spend before any sampling), the GUI is for
+inspection.
+
+`flipbook serve` loads `~/.secrets/tinker.env` if present — needed only for
+the one paid GUI action (the branch probe). Nothing else in the UI spends
+money.
 
 ## Development
 

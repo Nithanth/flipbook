@@ -218,3 +218,22 @@ def test_studies_union(tmp_path):
     store.put_run({"run_id": "orphan", "study": "no_metrics"})
     c = _client(tmp_path)
     assert set(c.get("/api/studies").json()) == {"s1", "no_metrics"}
+
+
+def test_load_env_file(tmp_path, monkeypatch):
+    from flipbook.api import load_env_file
+
+    f = tmp_path / "x.env"
+    f.write_text(
+        "# comment\n\nTINKER_API_KEY='tk_fake_value'\nexport OTHER=\"q\"\nALREADY=new\nbad line\n"
+    )
+    monkeypatch.delenv("TINKER_API_KEY", raising=False)
+    monkeypatch.delenv("OTHER", raising=False)
+    monkeypatch.setenv("ALREADY", "shell")
+    assert load_env_file(f) == ["TINKER_API_KEY", "OTHER"]
+    import os
+
+    assert os.environ["TINKER_API_KEY"] == "tk_fake_value"
+    assert os.environ["OTHER"] == "q"
+    assert os.environ["ALREADY"] == "shell"  # shell wins over file
+    assert load_env_file(tmp_path / "missing.env") == []

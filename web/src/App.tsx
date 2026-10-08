@@ -4,7 +4,7 @@ import Compare from "./screens/Compare";
 import Divergence from "./screens/Divergence";
 import Study from "./screens/Study";
 
-const ROUTES = ["study", "runs", "compare", "divergence"] as const;
+const ROUTES = ["study", "evals", "compare", "divergence"] as const;
 type Route = (typeof ROUTES)[number];
 type Theme = "dark" | "light";
 
@@ -22,7 +22,7 @@ function initialTheme(): Theme {
 /** Three cards fanning from a shared pivot - a page mid-flip, same as favicon. */
 function Logo() {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <g transform="rotate(32 2.5 21)">
         <rect x="2.5" y="4.5" width="11.5" height="16.5" rx="2" stroke="#5e7cff" strokeOpacity={0.35} strokeWidth="1.8" />
       </g>
@@ -86,7 +86,7 @@ export default function App() {
         </button>
       </nav>
       <main>
-        {route === "runs" && <Runs />}
+        {route === "evals" && <Runs />}
         {route === "compare" && <Compare />}
         {route === "divergence" && <Divergence />}
         {route === "study" && <Study />}
