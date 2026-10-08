@@ -19,6 +19,10 @@ dry-runs a grader on one text.
 `flipbook compare` reports pass@n (unbiased estimator) for every n up to the
 smaller run's k, paired deltas with bootstrap CIs, and per-question flips.
 
+`flipbook eval --config eval.toml` reads the same settings from TOML
+(file = defaults, explicit flags always override — see
+`examples/eval_baseline.toml`).
+
 `flipbook diverge --base A --ckpt B` rescores the baseline's own sampled
 traces under the checkpoint: per-token `lp_ckpt − lp_base` in nats, plus the
 model's probability of emitting nothing (`p_skip`). This is how you see the

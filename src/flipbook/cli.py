@@ -123,6 +123,53 @@ async def _resolve(args) -> tuple[str, str]:
     return r.base_model, r.renderer
 
 
+# keys a --config TOML may set (== the eval flag dests)
+_EVAL_FILE_KEYS = {
+    "model", "manifest", "effort", "k", "temperature", "max_tokens",
+    "seed", "renderer", "base_model", "label", "study",
+}
+
+
+def _load_eval_file(path: str) -> dict:
+    import tomllib
+
+    p = Path(path)
+    if not p.exists():
+        raise SystemExit(f"no config file at {path}")
+    try:
+        cfg = tomllib.loads(p.read_text())
+    except tomllib.TOMLDecodeError as e:
+        raise SystemExit(f"{path}: bad TOML: {e}") from e
+    bad = set(cfg) - _EVAL_FILE_KEYS
+    if bad:
+        raise SystemExit(f"{path}: unknown keys {sorted(bad)} - allowed: {sorted(_EVAL_FILE_KEYS)}")
+    return cfg
+
+
+def _merge_eval_config(args, argv: list[str]) -> None:
+    """File values are defaults; an explicit --flag always wins."""
+    if args.config:
+        cfg = _load_eval_file(args.config)
+        for k, v in cfg.items():
+            flag = "--" + k.replace("_", "-")
+            if not any(a == flag or a.startswith(flag + "=") for a in argv):
+                setattr(args, k, v)
+    if not args.model or not args.manifest:
+        raise SystemExit("eval needs --model and --manifest (flags or config keys)")
+
+
+def _write_eval_config(args, path: str) -> None:
+    lines = [
+        "# flipbook eval preset - `flipbook eval --config <this file>`",
+    ]
+    for k in sorted(_EVAL_FILE_KEYS):
+        v = getattr(args, k, None)
+        if v is None:
+            continue
+        lines.append(f"{k} = {json.dumps(v) if isinstance(v, str) else v}")
+    Path(path).write_text("\n".join(lines) + "\n")
+
+
 def _build_cfg(args, store: Store, base_model: str, renderer: str) -> RunConfig:
     doc = store.manifest_doc(args.manifest)
     if doc is None:
@@ -248,11 +295,29 @@ def main(argv: list[str] | None = None) -> int:
         "eval", help="run a config over a manifest",
         epilog="example: flipbook eval --model thinkingmachines/Inkling-Small "
                "--manifest aime30 --effort 0.5 --label baseline\n"
+               "--config FILE reads the same settings from TOML (file = "
+               "defaults, flags always override).\n"
                "a spend forecast prints before the first paid call; "
                "--forecast prints it and exits.",
     )
-    _add_eval_args(p)
+    # required=False on model/manifest: --config can supply them; validated post-merge
+    _add_eval_args(p, required=False)
+    p.add_argument("--config", default=None, metavar="FILE",
+                   help="TOML of eval settings; explicit flags override")
+    p.add_argument("--save-config", default=None, metavar="FILE",
+                   help="write the resolved settings to TOML and exit")
     p.add_argument("--forecast", action="store_true")
+    p.add_argument("--concurrency", type=int, default=8)
+    _add_store(p)
+    p = Sub(
+        "demo",
+        help="one-command tour: freeze a small manifest, eval the base model, then `flipbook serve`",
+    )
+    p.add_argument("--model", default="thinkingmachines/Inkling-Small")
+    p.add_argument("--benchmark", default="math500:8", help="NAME[:n] to freeze as 'demo'")
+    p.add_argument("--effort", type=float, default=0.9)
+    p.add_argument("--k", type=int, default=1)
+    p.add_argument("--forecast", action="store_true", help="print the spend estimate and stop")
     p.add_argument("--concurrency", type=int, default=8)
     _add_store(p)
     p = Sub("lint", help="check a config or stored run")
@@ -269,7 +334,13 @@ def main(argv: list[str] | None = None) -> int:
     p = Sub("manifests", help="list manifests in the store")
     p.add_argument("--json", action="store_true")
     _add_store(p)
-    p = Sub("runs", help="list runs in the store")
+    p = Sub(
+        "status",
+        help="store at a glance: studies, coverage gaps, and the commands that fill them",
+    )
+    _add_store(p)
+
+    p = Sub("runs", aliases=["evals"], help="list eval runs in the store")
     p.add_argument("--study").completer = _complete_study
     p.add_argument("--json", action="store_true")
     _add_store(p)
@@ -370,7 +441,29 @@ def main(argv: list[str] | None = None) -> int:
         _store(args).put_manifest(m.to_doc(), m.rows)
         print(f"froze {m.name}: {len(m.rows)} rows, hash {m.manifest_hash[:16]}")
         return 0
-    if args.cmd == "eval":
+    if args.cmd == "demo":
+        store = _store(args)
+        if store.manifest_doc("demo") is None:
+            bench, n = args.benchmark.rsplit(":", 1)
+            m = Manifest.freeze({bench: int(n)}, seed=0, name="demo")
+            store.put_manifest(m.to_doc(), m.rows)
+            print(f"froze demo: {len(m.rows)} rows from {bench}")
+        # reuse the eval pipeline verbatim - demo is just defaults around it
+        args = argparse.Namespace(
+            cmd="demo",
+            model=args.model, manifest="demo", effort=args.effort, k=args.k,
+            temperature=0.7, max_tokens=32768, seed=0, renderer=None,
+            base_model=None, label="demo", study="demo",
+            forecast=args.forecast, concurrency=args.concurrency,
+            config=None, save_config=None, store=args.store,
+        )
+    if args.cmd in ("eval", "demo"):
+        if args.cmd == "eval":
+            _merge_eval_config(args, argv if argv is not None else sys.argv[1:])
+        if args.save_config:
+            _write_eval_config(args, args.save_config)
+            print(f"wrote {args.save_config} - run it with `flipbook eval --config {args.save_config}`")
+            return 0
         store = _store(args)
         base_model, renderer = asyncio.run(_resolve(args))
         cfg = _build_cfg(args, store, base_model, renderer)
@@ -395,6 +488,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"run {summ.run_id}: {summ.n_new_samples} new samples, "
               f"{summ.n_errors} errors, pass@1={summ.pass1}, "
               f"~${summ.est_cost_usd or 0:.4f}")
+        if args.cmd == "demo":
+            print("inspect it: flipbook serve  ·  list runs: flipbook evals")
         return 0
     if args.cmd == "lint":
         store = _store(args)
@@ -447,7 +542,59 @@ def main(argv: list[str] | None = None) -> int:
                   f"{d.get('n_rows', len(d.get('rows', []))):>5}  "
                   f"{str(d.get('created_at', '-'))[:10]}")
         return 0
-    if args.cmd == "runs":
+    if args.cmd == "status":
+        store = _store(args)
+        runs = store.runs()
+        mnames = {d["manifest_hash"]: d["name"] for d in store.manifests()}
+        print(f"{len(mnames)} manifests · {len(runs)} eval runs in {store.path}")
+        studies: dict[str, list[dict]] = {}
+        for r in runs:
+            studies.setdefault(r.get("study") or "-", []).append(r)
+        for name, rs in sorted(studies.items()):
+            ckpts = sorted(
+                (
+                    r
+                    for r in rs
+                    if (r.get("provenance") or {}).get("train_step_measured") is not None
+                ),
+                key=lambda r: r["provenance"]["train_step_measured"],
+            )
+            base = next(
+                (r for r in rs if (r.get("provenance") or {}).get("train_step_measured") is None),
+                None,
+            )
+            mans = {mnames.get(r.get("manifest_hash"), str(r.get("manifest_hash"))[:12]) for r in rs}
+            print(f"\n{name} - {len(rs)} runs on {', '.join(sorted(mans))}")
+            if not ckpts:
+                continue
+            steps = [r["provenance"]["train_step_measured"] for r in ckpts]
+            print(f"  checkpoints  {len(ckpts)} (steps {steps[0]}..{steps[-1]})")
+            divdir, effdir = store.path / "divergence", store.path / "effort"
+            have_div = {r["run_id"] for r in ckpts
+                        if any(divdir.glob(f"*__{r['run_id']}.parquet"))}
+            have_eff = {r["run_id"] for r in ckpts
+                        if any(effdir.glob(f"{r['run_id']}__*.parquet"))}
+            # reuse the pair this study already uses, e.g. run__0.2_0.9.parquet
+            pair = next(
+                (f.stem.split("__")[1] for r in ckpts
+                 for f in effdir.glob(f"{r['run_id']}__*.parquet")),
+                "LOW,HIGH",
+            ).replace("_", ",")
+            for kind, have, hint in (
+                ("divergence", have_div, "diverge --base {b} --ckpt {c}"),
+                ("effort gap", have_eff, "effort --run {c} --pair " + pair),
+            ):
+                miss = [r for r in ckpts if r["run_id"] not in have]
+                if not miss:
+                    print(f"  {kind:<12} {len(have)}/{len(ckpts)} checkpoints")
+                    continue
+                msteps = ", ".join(str(r["provenance"]["train_step_measured"]) for r in miss)
+                print(f"  {kind:<12} {len(have)}/{len(ckpts)} checkpoints  missing: step {msteps}")
+                c = f"{name}/{miss[0].get('label') or miss[0]['run_id']}"
+                b = f"{name}/{base.get('label') or base['run_id']}" if base else "BASE"
+                print(f"    fill: flipbook {hint.format(b=b, c=c)}")
+        return 0
+    if args.cmd in ("runs", "evals"):
         store = _store(args)
         if args.json:
             print(json.dumps(store.runs(args.study), indent=2, default=str))

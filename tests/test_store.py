@@ -165,3 +165,17 @@ def test_no_torn_writes(tmp_path):
     store = Store(tmp_path)
     store.put_samples("r1", [_sample("r1", "a:1")])
     assert not list(tmp_path.glob("**/*.tmp"))
+
+
+def test_status_reports_coverage_gaps(tmp_path, capsys):
+    from flipbook.cli import main
+    store = Store(str(tmp_path))
+    store.put_run({"run_id": "b"*12, "study": "s", "label": "baseline"})
+    store.put_run({
+        "run_id": "c"*12, "study": "s", "label": "step8",
+        "provenance": {"train_step_measured": 8},
+    })
+    assert main(["status", "--store", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "s - 2 runs" in out
+    assert "divergence   0/1" in out and "missing: step 8" in out

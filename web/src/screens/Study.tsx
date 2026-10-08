@@ -32,11 +32,23 @@ export default function Study() {
     if (!study) return;
     setDetail(null);
     setErr(null);
-    api.study(study).then(setDetail).catch((e) => setErr(String(e)));
+    const load = () =>
+      api
+        .study(study)
+        .then((d) => {
+          setDetail(d);
+          setTouched(new Date());
+        })
+        .catch((e) => setErr(String(e)));
+    load();
+    // poll while open so checkpoints eval'd mid-training land without a reload
+    const t = setInterval(load, 8000);
+    return () => clearInterval(t);
   }, [study]);
 
   const derived = useMemo(() => (detail ? derive(detail) : null), [detail]);
   const [focus, setFocus] = useState<string | null>(null);
+  const [touched, setTouched] = useState<Date | null>(null);
 
   const base = detail?.runs.find(
     (r) => r.label === "baseline" || r.label === "base" || r.train_step == null,
@@ -67,6 +79,7 @@ export default function Study() {
           <span className="sub">
             {detail.runs.length} runs · {nEvals} eval points
             {models.length === 1 ? ` · ${models[0]}` : ""}
+            {touched ? ` · live · updated ${touched.toLocaleTimeString()}` : ""}
           </span>
         )}
       </div>
@@ -84,7 +97,7 @@ export default function Study() {
       {detail && derived && derived.rows.length > 0 && (
         <>
           <Hero d={derived} go={go} />
-          <Narrative d={derived} />
+          <Narrative d={derived} runs={detail.runs} />
           <MetricStrip d={derived} focus={focus} onFocus={setFocus} go={go} />
           <StepTable d={derived} runs={detail.runs} />
         </>
@@ -425,11 +438,18 @@ function ChartTip({
 }
 
 /** Plain-English takeaway, derived from the step rows - the chart shows it, this says it. */
-function Narrative({ d }: { d: Derived }) {
+function Narrative({ d, runs }: { d: Derived; runs: Run[] }) {
   const evals = d.rows.filter((r) => r.pass1 != null);
   if (evals.length < 2) return null;
   const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
-  const bullets: string[] = [];
+  const bullets: { t: string; href?: string }[] = [];
+  // every claim should be one click from its evidence
+  const base = runs.find((r) => r.train_step == null);
+  const atStep = (s: number) => runs.find((r) => r.train_step === s)?.run_id;
+  const cmp = (s: number) =>
+    base && atStep(s) ? `#/compare?a=${base.run_id}&b=${atStep(s)}` : undefined;
+  const div = (s: number) =>
+    base && atStep(s) ? `#/divergence?base=${base.run_id}&ckpt=${atStep(s)}` : undefined;
 
   const peak = evals.reduce((a, b) => (b.pass1! > a.pass1! ? b : a));
   const after = evals.filter((r) => r.step >= peak.step);
@@ -454,21 +474,25 @@ function Narrative({ d }: { d: Derived }) {
     const open = realPeak
       ? `pass@1 rose to ${pct(peak.pass1!)} (step ${peak.step})`
       : `pass@1 held near ${pct(first.pass1!)} through step ${held.step}`;
-    bullets.push(
-      `${open}, then fell to ${pct(trough.pass1!)} by step ${trough.step}` +
+    bullets.push({
+      t:
+        `${open}, then fell to ${pct(trough.pass1!)} by step ${trough.step}` +
         (last.pass1! > trough.pass1! + 0.02 ? ` - ending at ${pct(last.pass1!)} (step ${last.step})` : ` and stayed there`),
-    );
+      href: cmp(trough.step),
+    });
   } else {
-    bullets.push(
-      `pass@1 stayed flat through training (${pct(evals[0].pass1!)} → ${pct(last.pass1!)}) - no eval-visible regression`,
-    );
+    bullets.push({
+      t: `pass@1 stayed flat through training (${pct(evals[0].pass1!)} → ${pct(last.pass1!)}) - no eval-visible regression`,
+      href: cmp(last.step),
+    });
   }
 
   const divMove = evals.find((r) => r.div != null && r.div < -50);
   if (cliff && divMove && divMove.step < cliff.step) {
-    bullets.push(
-      `divergence moved first: ${divMove.div!.toFixed(0)} nats at step ${divMove.step}, ${cliff.step - divMove.step} steps before the first significant pass@1 drop (step ${cliff.step})`,
-    );
+    bullets.push({
+      t: `divergence moved first: ${divMove.div!.toFixed(0)} nats at step ${divMove.step}, ${cliff.step - divMove.step} steps before the first significant pass@1 drop (step ${cliff.step})`,
+      href: div(divMove.step),
+    });
   }
 
   const gaps = evals.filter((r) => r.effortGap != null);
@@ -476,9 +500,10 @@ function Narrative({ d }: { d: Derived }) {
     const g0 = gaps[0].effortGap!;
     const dead = gaps.find((g) => g.effortGap! < Math.max(20, g0 * 0.1));
     if (dead)
-      bullets.push(
-        `effort conditioning collapsed at step ${dead.step} (${g0.toFixed(0)} → ${dead.effortGap!.toFixed(0)} nats)`,
-      );
+      bullets.push({
+        t: `effort conditioning collapsed at step ${dead.step} (${g0.toFixed(0)} → ${dead.effortGap!.toFixed(0)} nats)`,
+        href: cmp(dead.step),
+      });
   }
 
   // first -> last, not global extremes: a transient spike is not the story
@@ -488,28 +513,36 @@ function Narrative({ d }: { d: Derived }) {
     const b = gt[gt.length - 1].genTok!;
     const ratio = Math.max(a, b) / Math.max(1, Math.min(a, b));
     if (ratio > 3)
-      bullets.push(
-        `responses went from ${a.toFixed(0)} to ${b.toFixed(0)} tokens (${ratio.toFixed(0)}× ${b < a ? "shorter" : "longer"}) - ${
+      bullets.push({
+        t: `responses went from ${a.toFixed(0)} to ${b.toFixed(0)} tokens (${ratio.toFixed(0)}× ${b < a ? "shorter" : "longer"}) - ${
           b < a
             ? "the model stopped reasoning at length, it did not just get answers wrong"
             : "the model is writing far more per question than it used to"
         }`,
-      );
+        href: cmp(gt[gt.length - 1].step),
+      });
   }
 
   const tr = evals.filter((r) => r.trunc != null).reduce((a, b) => (b.trunc! > (a?.trunc ?? -1) ? b : a), evals[0]);
   if (tr?.trunc != null && tr.trunc > 0.25)
-    bullets.push(
-      `truncation peaked at ${(tr.trunc * 100).toFixed(0)}% (step ${tr.step}) - the model was rambling into the token cap`,
-    );
+    bullets.push({
+      t: `truncation peaked at ${(tr.trunc * 100).toFixed(0)}% (step ${tr.step}) - the model was rambling into the token cap`,
+      href: cmp(tr.step),
+    });
 
   return (
     <div className="card read">
       <div className="mini-label">the read</div>
       <p className="verdict">{verdict}</p>
-      {bullets.slice(0, 4).map((b) => (
-        <p key={b}>{b}</p>
-      ))}
+      {bullets.slice(0, 4).map((b) =>
+        b.href ? (
+          <p key={b.t}>
+            <a href={b.href}>{b.t}</a>
+          </p>
+        ) : (
+          <p key={b.t}>{b.t}</p>
+        ),
+      )}
     </div>
   );
 }
@@ -562,6 +595,8 @@ function MetricStrip({
           key={sel[0]}
           label={sel[0]}
           pts={d.rows.filter((r) => sel[2](r) != null).map((r) => ({ x: r.step, y: sel[2](r)! }))}
+          ghost={d.rows.filter((r) => r.pass1 != null).map((r) => ({ x: r.step, y: r.pass1! }))}
+          ghostLabel="pass@1"
           xDomain={[Math.min(...d.rows.map((r) => r.step)), Math.max(...d.rows.map((r) => r.step))]}
           epochStarts={d.epochStarts}
           fmt={sel[3]}
@@ -576,6 +611,8 @@ function MetricStrip({
 function FocusChart({
   label,
   pts,
+  ghost,
+  ghostLabel,
   xDomain,
   epochStarts,
   fmt,
@@ -583,6 +620,10 @@ function FocusChart({
 }: {
   label: string;
   pts: { x: number; y: number }[];
+  /** pass@1 drawn faintly behind the focused metric - the reference every
+   *  other metric is read against; kept on its own [0,1] scale */
+  ghost?: { x: number; y: number }[];
+  ghostLabel?: string;
   xDomain: [number, number];
   epochStarts: number[];
   fmt: (v: number) => string;
@@ -602,6 +643,12 @@ function FocusChart({
   const xticks = tickSteps(x0, x1);
   const epochAt = (s: number) => 1 + epochStarts.filter((e) => e <= s).length;
   const path = pts.map((p, i) => `${i ? "L" : "M"}${sx(p.x)},${sy(p.y)}`).join(" ");
+  // ghost (pass@1) is always [0,1] so it shares the plot height directly
+  const gsy = (y: number) => h - pad - Math.max(0, Math.min(1, y)) * (h - 2 * pad);
+  const ghostPath =
+    ghost && ghost.length > 1
+      ? ghost.map((p, i) => `${i ? "L" : "M"}${sx(p.x)},${gsy(p.y)}`).join(" ")
+      : null;
   const hov = hover != null ? pts.find((p) => p.x === hover) : undefined;
   const onMove = (e: MouseEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -638,6 +685,9 @@ function FocusChart({
       {epochStarts.filter((e) => e > x0 && e < x1).map((e) => (
         <line key={e} x1={sx(e)} x2={sx(e)} y1={pad} y2={h - pad} strokeDasharray="2 4" style={{ stroke: "var(--border)" }} />
       ))}
+      {ghostPath && (
+        <path d={ghostPath} fill="none" style={{ stroke: "var(--muted)" }} strokeWidth={1.4} strokeDasharray="4 3" opacity={0.6} />
+      )}
       <path d={path} fill="none" style={{ stroke: "var(--accent)" }} strokeWidth={1.8} />
       {pts.map((p) => (
         <circle
@@ -676,6 +726,14 @@ function FocusChart({
             lines={[
               [`step ${hov.x} · epoch ${epochAt(hov.x)}`, "var(--text)", true],
               [`${label}  ${fmt(hov.y)}`, "var(--accent)", false],
+              ...(ghost && ghostLabel
+                ? (() => {
+                    const g = ghost.find((p) => p.x === hov.x);
+                    return g
+                      ? ([[`${ghostLabel}  ${(g.y * 100).toFixed(1)}%`, "var(--muted)", false]] as [string, string, boolean][])
+                      : [];
+                  })()
+                : []),
             ]}
           />
         </g>
@@ -686,7 +744,7 @@ function FocusChart({
         optimizer step →
       </text>
       <text x={w - pad} y={16} textAnchor="end" style={{ fill: "var(--muted)" }} fontSize={11}>
-        {label}
+        {label}{ghostLabel ? `  ·  ┅ ${ghostLabel}` : ""}
       </text>
     </svg>
   );

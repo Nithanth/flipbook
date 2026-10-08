@@ -83,11 +83,15 @@ def create_app(store_path: str | Path) -> FastAPI:
     def _divergence(a: str, b: str):
         return _cached(f"div:{a}__{b}", lambda: store.divergence(a, b))
 
-    # cache paired stats, expensiveish
+    # cache paired stats, expensiveish - keyed on sample counts so an eval
+    # still accumulating mid-session re-reads instead of serving stale rows
     @lru_cache(maxsize=32)
-    def _compare(a: str, b: str) -> dict:
+    def _compare(a: str, b: str, sig: tuple[int, int]) -> dict:
         from dataclasses import asdict
         return asdict(compare(store, a, b))
+
+    def _compare_live(a: str, b: str) -> dict:
+        return _compare(a, b, (_samples(a).num_rows, _samples(b).num_rows))
 
     @app.get("/api/manifests")
     def manifests() -> list[dict]:
@@ -123,7 +127,7 @@ def create_app(store_path: str | Path) -> FastAPI:
         for rid in (a, b):
             if not (store.path / "samples" / f"{rid}.parquet").exists():
                 raise HTTPException(404, f"no run {rid}")
-        report = _compare(a, b)
+        report = _compare_live(a, b)
         if blocks := report["comparability"].get("blocks"):
             raise HTTPException(422, "; ".join(blocks))
         return report

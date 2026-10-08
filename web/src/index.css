@@ -170,6 +170,8 @@ tr.gain td { color: var(--pos); }
 .read p::before { content: "· "; color: var(--accent); font-weight: 700; }
 .read p.verdict { font-weight: 600; color: var(--text); }
 .read p.verdict::before { content: "→ "; }
+.read a { color: inherit; text-decoration: underline dotted var(--accent); text-underline-offset: 3px; }
+.read a:hover { color: var(--accent); }
 
 /* hover markers fade in rather than pop */
 @keyframes hovin { from { opacity: 0; } }

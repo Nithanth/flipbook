@@ -9,10 +9,14 @@ export default function Runs() {
   const [mNames, setMNames] = useState<Record<string, string>>({});
   const [sel, setSel] = useState<string[]>([]);
   useEffect(() => {
-    api.runs().then(setRuns).catch((e) => setErr(String(e)));
+    const load = () => api.runs().then(setRuns).catch((e) => setErr(String(e)));
+    load();
+    // poll while open - evals landing mid-training show up without a reload
+    const t = setInterval(load, 10000);
     api.manifests().then((ms) =>
       setMNames(Object.fromEntries(ms.map((m) => [m.manifest_hash, m.name]))),
     );
+    return () => clearInterval(t);
   }, []);
 
   if (err) return <p className="err">{err}</p>;
