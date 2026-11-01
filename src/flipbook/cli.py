@@ -4,9 +4,12 @@
 
 import argparse
 import asyncio
+import functools
 import json
+import os
 import sys
 import textwrap
+from pathlib import Path
 
 from flipbook.budget import budget
 from flipbook.config import RunConfig
@@ -37,22 +40,75 @@ def _run_id(store: Store, ref: str) -> str:
 
 
 def _add_store(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--store", default="./flipbook_store")
+    p.add_argument("--store", default=os.environ.get("FLIPBOOK_STORE", "./flipbook_store"),
+                   help="store dir; env FLIPBOOK_STORE")
+
+
+def _completion_store(ns) -> Store:
+    return Store(getattr(ns, "store", None)
+                 or os.environ.get("FLIPBOOK_STORE", "./flipbook_store"))
+
+
+def _complete_run_ref(prefix, parsed_args, **kw):
+    """Every form resolve_run accepts: ids, labels, study/label."""
+    try:
+        refs = []
+        for r in _completion_store(parsed_args).runs():
+            refs.append(r["run_id"])
+            if r.get("label"):
+                refs.append(r["label"])
+                if r.get("study"):
+                    refs.append(f"{r['study']}/{r['label']}")
+        return refs
+    except Exception:  # noqa: BLE001 - a completer must never break the shell
+        return []
+
+
+def _complete_manifest(prefix, parsed_args, **kw):
+    try:
+        return [d["name"] for d in _completion_store(parsed_args).manifests()]
+    except Exception:  # noqa: BLE001 - a completer must never break the shell
+        return []
+
+
+def _complete_study(prefix, parsed_args, **kw):
+    try:
+        return sorted({r.get("study") for r in _completion_store(parsed_args).runs()} - {None})
+    except Exception:  # noqa: BLE001 - a completer must never break the shell
+        return []
+
+
+def _complete_row(prefix, parsed_args, **kw):
+    """Row ids for the run already typed; empty until it resolves."""
+    try:
+        store = _completion_store(parsed_args)
+        rec = store.resolve_run(parsed_args.run)
+        return [r["row_id"] for r in store.manifest_rows(rec["manifest_hash"])]
+    except Exception:  # noqa: BLE001 - a completer must never break the shell
+        return []
+
+
+def _complete_grader(prefix, parsed_args, **kw):
+    from flipbook.graders import GRADERS
+    return sorted(GRADERS)
 
 
 def _add_eval_args(p: argparse.ArgumentParser, required: bool = True) -> None:
     # lint --run reads model/manifest off the stored run record instead
-    p.add_argument("--model", required=required)
-    p.add_argument("--manifest", required=required)
-    p.add_argument("--effort", type=float, default=None)
-    p.add_argument("--k", type=int, default=4)
+    p.add_argument("--model", required=required,
+                   help="'thinkingmachines/Inkling-Small', or 'tinker://<run>/sampler_weights/<ckpt>'")
+    p.add_argument("--manifest", required=required, help="manifest name or hash"
+                   ).completer = _complete_manifest
+    p.add_argument("--effort", type=float, default=None,
+                   help="reasoning effort 0..1 (required by Inkling)")
+    p.add_argument("--k", type=int, default=4, help="samples per question")
     p.add_argument("--temperature", type=float, default=0.7)
     p.add_argument("--max-tokens", type=int, default=32768)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--renderer", default=None)
+    p.add_argument("--renderer", default=None, help="renderer override, e.g. tml_v0")
     p.add_argument("--base-model", default=None, help="offline override for tinker:// resolution")
-    p.add_argument("--label", default=None)
-    p.add_argument("--study", default=None)
+    p.add_argument("--label", default=None, help="short name for this run, e.g. 'baseline' or 'step56'")
+    p.add_argument("--study", default=None, help="grouping name - runs in a study chart together")
 
 
 async def _resolve(args) -> tuple[str, str]:
@@ -65,6 +121,53 @@ async def _resolve(args) -> tuple[str, str]:
         args.model, renderer=args.renderer, base_model=args.base_model, service_client=sc
     )
     return r.base_model, r.renderer
+
+
+# keys a --config TOML may set (== the eval flag dests)
+_EVAL_FILE_KEYS = {
+    "model", "manifest", "effort", "k", "temperature", "max_tokens",
+    "seed", "renderer", "base_model", "label", "study",
+}
+
+
+def _load_eval_file(path: str) -> dict:
+    import tomllib
+
+    p = Path(path)
+    if not p.exists():
+        raise SystemExit(f"no config file at {path}")
+    try:
+        cfg = tomllib.loads(p.read_text())
+    except tomllib.TOMLDecodeError as e:
+        raise SystemExit(f"{path}: bad TOML: {e}") from e
+    bad = set(cfg) - _EVAL_FILE_KEYS
+    if bad:
+        raise SystemExit(f"{path}: unknown keys {sorted(bad)} - allowed: {sorted(_EVAL_FILE_KEYS)}")
+    return cfg
+
+
+def _merge_eval_config(args, argv: list[str]) -> None:
+    """File values are defaults; an explicit --flag always wins."""
+    if args.config:
+        cfg = _load_eval_file(args.config)
+        for k, v in cfg.items():
+            flag = "--" + k.replace("_", "-")
+            if not any(a == flag or a.startswith(flag + "=") for a in argv):
+                setattr(args, k, v)
+    if not args.model or not args.manifest:
+        raise SystemExit("eval needs --model and --manifest (flags or config keys)")
+
+
+def _write_eval_config(args, path: str) -> None:
+    lines = [
+        "# flipbook eval preset - `flipbook eval --config <this file>`",
+    ]
+    for k in sorted(_EVAL_FILE_KEYS):
+        v = getattr(args, k, None)
+        if v is None:
+            continue
+        lines.append(f"{k} = {json.dumps(v) if isinstance(v, str) else v}")
+    Path(path).write_text("\n".join(lines) + "\n")
 
 
 def _build_cfg(args, store: Store, base_model: str, renderer: str) -> RunConfig:
@@ -106,10 +209,77 @@ def _print_findings(findings) -> int:
 _RUN_REF_EPILOG = "run refs: run_id, unique id prefix, 'study/label', or a unique label"
 
 
+class _Fmt(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
+    pass
+
+
+_GUIDE = """\
+workflow
+  1. freeze    build a manifest: frozen questions + golds + grader_ids
+  2. eval      sample a model over it (a spend forecast prints first)
+  3. compare   paired stats and flips between two runs
+  4. diverge   per-token logprob gap of a checkpoint on base traces
+  5. serve     read-only API + browser UI over the store
+
+walkthrough
+  flipbook freeze --benchmark aime2026:30 --name aime30
+  flipbook eval --model thinkingmachines/Inkling-Small \\
+      --manifest aime30 --effort 0.5 --label baseline
+  flipbook eval --model tinker://<run>/sampler_weights/final \\
+      --manifest aime30 --effort 0.5 --study sft --label step56
+  flipbook compare baseline sft/step56
+  flipbook show sft/step56 <row_id>
+  flipbook diverge --base baseline --ckpt sft/step56
+  flipbook serve      # opens the GUI at localhost:8484
+
+inspecting
+  the GUI is a read-only view over the store directory - nothing lives
+  in the server. kill it, move the store, serve it again: same results.
+  the one paid action (branch probe) needs TINKER_API_KEY; serve loads
+  ~/.secrets/tinker.env if it exists.
+
+during training
+  flipbook track <cookbook run dir> --manifest aime30 --study sft
+  evaluates every checkpoint under a cookbook log dir and groups the runs
+  into a study - that is what powers the study chart and 'the read'.
+
+run refs
+  anywhere a run is taken, any of these works:
+    run_id          013ccbd2f51d...
+    prefix          013ccb   (if unique)
+    study/label     sft/step56
+    label           baseline (if unique)
+
+store
+  ./flipbook_store by default; override per command with --store or
+  set FLIPBOOK_STORE. everything is local parquet + json - inspectable
+  with duckdb or pandas. 'flipbook manifests' lists what's frozen.
+
+scripting
+  manifests, runs, show, and compare take --json for machine-readable
+  output. eval prints a spend forecast before the first paid call;
+  --forecast prints it without running.
+
+tab completion (argcomplete)
+  eval "$(register-python-argcomplete flipbook)"   # bash, or zsh with bashcompinit
+  run labels, manifest names, studies, grader ids, and row ids all
+  complete on <TAB>.
+
+migration helpers (rarely needed): import-evalstore, import-metrics
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="flipbook")
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser(
+    ap = argparse.ArgumentParser(
+        prog="flipbook",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="the short version:\n  freeze -> eval -> compare -> serve\n\n"
+               "'flipbook guide' prints a full walkthrough.",
+    )
+    sub = ap.add_subparsers(dest="cmd", required=True, metavar="cmd")
+    Sub = functools.partial(sub.add_parser, formatter_class=_Fmt)
+    sub.add_parser("guide", help="print a walkthrough of the whole workflow")
+    p = Sub(
         "freeze", help="freeze a benchmark subset into a manifest",
         epilog="--from-jsonl rows: {'question'|'messages', 'gold', 'grader_id'} — "
                "graders: builtins, 'regex:<pat>', 'module.path:fn', or 'path/file.py:fn'",
@@ -121,58 +291,93 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--name", required=True)
     _add_store(p)
-    p = sub.add_parser("eval", help="run a config over a manifest")
-    _add_eval_args(p)
+    p = Sub(
+        "eval", help="run a config over a manifest",
+        epilog="example: flipbook eval --model thinkingmachines/Inkling-Small "
+               "--manifest aime30 --effort 0.5 --label baseline\n"
+               "--config FILE reads the same settings from TOML (file = "
+               "defaults, flags always override).\n"
+               "a spend forecast prints before the first paid call; "
+               "--forecast prints it and exits.",
+    )
+    # required=False on model/manifest: --config can supply them; validated post-merge
+    _add_eval_args(p, required=False)
+    p.add_argument("--config", default=None, metavar="FILE",
+                   help="TOML of eval settings; explicit flags override")
+    p.add_argument("--save-config", default=None, metavar="FILE",
+                   help="write the resolved settings to TOML and exit")
     p.add_argument("--forecast", action="store_true")
     p.add_argument("--concurrency", type=int, default=8)
     _add_store(p)
-    p = sub.add_parser("lint", help="check a config or stored run")
+    p = Sub(
+        "demo",
+        help="one-command tour: freeze a small manifest, eval the base model, then `flipbook serve`",
+    )
+    p.add_argument("--model", default="thinkingmachines/Inkling-Small")
+    p.add_argument("--benchmark", default="math500:8", help="NAME[:n] to freeze as 'demo'")
+    p.add_argument("--effort", type=float, default=0.9)
+    p.add_argument("--k", type=int, default=1)
+    p.add_argument("--forecast", action="store_true", help="print the spend estimate and stop")
+    p.add_argument("--concurrency", type=int, default=8)
+    _add_store(p)
+    p = Sub("lint", help="check a config or stored run")
     src = p.add_mutually_exclusive_group(required=True)
-    src.add_argument("--run")
+    src.add_argument("--run").completer = _complete_run_ref
     src.add_argument("--config", action="store_true")
     _add_eval_args(p, required=False)
     _add_store(p)
-    p = sub.add_parser("graders", help="list registered grader ids")
-    p = sub.add_parser("grade", help="dry-run a grader on one text")
+    p = Sub("graders", help="list registered grader ids")
+    p = Sub("grade", help="dry-run a grader on one text")
     p.add_argument("text")
-    p.add_argument("--grader", required=True)
+    p.add_argument("--grader", required=True).completer = _complete_grader
     p.add_argument("--gold", required=True)
-    p = sub.add_parser("runs", help="list runs in the store")
-    p.add_argument("--study")
+    p = Sub("manifests", help="list manifests in the store")
+    p.add_argument("--json", action="store_true")
     _add_store(p)
-    p = sub.add_parser("budget", help="token/cost distribution for a run", epilog=_RUN_REF_EPILOG)
-    p.add_argument("run")
+    p = Sub(
+        "status",
+        help="store at a glance: studies, coverage gaps, and the commands that fill them",
+    )
     _add_store(p)
-    p = sub.add_parser("show", help="inspect one row's samples in a run", epilog=_RUN_REF_EPILOG)
-    p.add_argument("run", help="run id, prefix, study/label, or label")
-    p.add_argument("row", help="row id or unique prefix (of id or hash suffix)")
+
+    p = Sub("runs", aliases=["evals"], help="list eval runs in the store")
+    p.add_argument("--study").completer = _complete_study
+    p.add_argument("--json", action="store_true")
+    _add_store(p)
+    p = Sub("budget", help="token/cost distribution for a run", epilog=_RUN_REF_EPILOG)
+    p.add_argument("run").completer = _complete_run_ref
+    _add_store(p)
+    p = Sub("show", help="inspect one row's samples in a run", epilog=_RUN_REF_EPILOG)
+    p.add_argument("run", help="run id, prefix, study/label, or label").completer = _complete_run_ref
+    p.add_argument("row", help="row id or unique prefix (of id or hash suffix)").completer = _complete_row
     p.add_argument("--sample", type=int, default=None, help="only this sample index")
     p.add_argument("--full", action="store_true", help="print full text, not the tail")
     p.add_argument("--thinking", action="store_true", help="decode thinking from token_ids")
+    p.add_argument("--json", action="store_true")
     _add_store(p)
-    p = sub.add_parser("compare", help="paired stats between two runs", epilog=_RUN_REF_EPILOG)
-    p.add_argument("run_a")
-    p.add_argument("run_b")
+    p = Sub("compare", help="paired stats between two runs", epilog=_RUN_REF_EPILOG)
+    p.add_argument("run_a").completer = _complete_run_ref
+    p.add_argument("run_b").completer = _complete_run_ref
     p.add_argument("--gate", action="store_true", help="exit 2 on a significant regression")
     p.add_argument("--max-regression", type=float, default=0.02)
     p.add_argument("--max-new-truncation-rate", type=float, default=0.0)
     p.add_argument("--json", action="store_true")
     p.add_argument("--markdown", action="store_true")
     _add_store(p)
-    p = sub.add_parser("diverge", help="per-token logprob gap of ckpt vs base on base's traces", epilog=_RUN_REF_EPILOG)
-    p.add_argument("--base", required=True)
-    p.add_argument("--ckpt", required=True)
+    p = Sub("diverge", help="per-token logprob gap of ckpt vs base on base's traces", epilog=_RUN_REF_EPILOG)
+    p.add_argument("--base", required=True).completer = _complete_run_ref
+    p.add_argument("--ckpt", required=True).completer = _complete_run_ref
     p.add_argument("--rows", choices=["flips", "all"], default="all")
     p.add_argument("--forecast", action="store_true")
     _add_store(p)
-    p = sub.add_parser("effort", help="effort-prefix gap for one run's traces", epilog=_RUN_REF_EPILOG)
-    p.add_argument("--run", required=True)
+    p = Sub("effort", help="effort-prefix gap for one run's traces", epilog=_RUN_REF_EPILOG)
+    p.add_argument("--run", required=True).completer = _complete_run_ref
     p.add_argument("--pair", required=True, help="e_low,e_high")
     p.add_argument("--forecast", action="store_true")
     _add_store(p)
-    p = sub.add_parser("track", help="evaluate every checkpoint in a cookbook log dir")
+    p = Sub("track", help="evaluate every checkpoint in a cookbook log dir")
     p.add_argument("log_dir")
-    p.add_argument("--manifest", required=True)
+    p.add_argument("--manifest", required=True).completer = _complete_manifest
     sel = p.add_mutually_exclusive_group()
     sel.add_argument("--every", type=int)
     sel.add_argument("--last", type=int)
@@ -189,18 +394,40 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--forecast", action="store_true")
     p.add_argument("--concurrency", type=int, default=8)
     _add_store(p)
-    p = sub.add_parser("import-evalstore", help="import a legacy eval bundle into the store")
+    p = Sub("import-evalstore", help="import a legacy eval bundle into the store")
     p.add_argument("path")
     _add_store(p)
-    p = sub.add_parser("import-metrics", help="import metrics.jsonl from a cookbook log dir")
+    p = Sub("import-metrics", help="import metrics.jsonl from a cookbook log dir")
     p.add_argument("log_dir")
     p.add_argument("--study", required=True)
     _add_store(p)
-    p = sub.add_parser("serve", help="read-only API + GUI over the store")
+    p = Sub("serve", help="read-only API + GUI over the store")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8484)
+    p.add_argument("--no-open", action="store_true", help="don't open the browser")
+    p.add_argument(
+        "--env-file", default="~/.secrets/tinker.env",
+        help="dotenv loaded if present (TINKER_API_KEY for the branch probe)",
+    )
     _add_store(p)
+    # keep migration helpers out of the top-level list; they still run
+    sub._choices_actions = [
+        a for a in sub._choices_actions
+        if a.dest not in ("import-evalstore", "import-metrics")
+    ]
+    if argv is None:
+        argv = sys.argv[1:]
+    # completion runs with argv empty - the typed line lives in COMP_LINE,
+    # so autocomplete must come before the bare-invocation help
+    import argcomplete  # lazy: only the completion path pays the import
+    argcomplete.autocomplete(ap)
+    if not argv:
+        ap.print_help()
+        return 2
     args = ap.parse_args(argv)
+    if args.cmd == "guide":
+        print(_GUIDE)
+        return 0
     if args.cmd == "freeze":
         if args.from_jsonl:
             if len(args.benchmark) != 1 or ":" in args.benchmark[0]:
@@ -214,7 +441,29 @@ def main(argv: list[str] | None = None) -> int:
         _store(args).put_manifest(m.to_doc(), m.rows)
         print(f"froze {m.name}: {len(m.rows)} rows, hash {m.manifest_hash[:16]}")
         return 0
-    if args.cmd == "eval":
+    if args.cmd == "demo":
+        store = _store(args)
+        if store.manifest_doc("demo") is None:
+            bench, n = args.benchmark.rsplit(":", 1)
+            m = Manifest.freeze({bench: int(n)}, seed=0, name="demo")
+            store.put_manifest(m.to_doc(), m.rows)
+            print(f"froze demo: {len(m.rows)} rows from {bench}")
+        # reuse the eval pipeline verbatim - demo is just defaults around it
+        args = argparse.Namespace(
+            cmd="demo",
+            model=args.model, manifest="demo", effort=args.effort, k=args.k,
+            temperature=0.7, max_tokens=32768, seed=0, renderer=None,
+            base_model=None, label="demo", study="demo",
+            forecast=args.forecast, concurrency=args.concurrency,
+            config=None, save_config=None, store=args.store,
+        )
+    if args.cmd in ("eval", "demo"):
+        if args.cmd == "eval":
+            _merge_eval_config(args, argv if argv is not None else sys.argv[1:])
+        if args.save_config:
+            _write_eval_config(args, args.save_config)
+            print(f"wrote {args.save_config} - run it with `flipbook eval --config {args.save_config}`")
+            return 0
         store = _store(args)
         base_model, renderer = asyncio.run(_resolve(args))
         cfg = _build_cfg(args, store, base_model, renderer)
@@ -239,6 +488,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"run {summ.run_id}: {summ.n_new_samples} new samples, "
               f"{summ.n_errors} errors, pass@1={summ.pass1}, "
               f"~${summ.est_cost_usd or 0:.4f}")
+        if args.cmd == "demo":
+            print("inspect it: flipbook serve  ·  list runs: flipbook evals")
         return 0
     if args.cmd == "lint":
         store = _store(args)
@@ -279,10 +530,78 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(f"verdict={g.verdict} extracted={g.extracted!r} note={g.note}")
         return 0
-    if args.cmd == "runs":
+    if args.cmd == "manifests":
         store = _store(args)
-        step = lambda r: (r.get("train_step")
-                          or (r.get("provenance") or {}).get("train_step_measured") or -1)
+        docs = store.manifests()
+        if args.json:
+            print(json.dumps(docs, indent=2, default=str))
+            return 0
+        print(f"{'name':<16}  {'hash':<12} {'rows':>5}  {'created'}")
+        for d in docs:
+            print(f"{d['name']:<16}  {d['manifest_hash'][:12]}  "
+                  f"{d.get('n_rows', len(d.get('rows', []))):>5}  "
+                  f"{str(d.get('created_at', '-'))[:10]}")
+        return 0
+    if args.cmd == "status":
+        store = _store(args)
+        runs = store.runs()
+        mnames = {d["manifest_hash"]: d["name"] for d in store.manifests()}
+        print(f"{len(mnames)} manifests · {len(runs)} eval runs in {store.path}")
+        studies: dict[str, list[dict]] = {}
+        for r in runs:
+            studies.setdefault(r.get("study") or "-", []).append(r)
+        for name, rs in sorted(studies.items()):
+            ckpts = sorted(
+                (
+                    r
+                    for r in rs
+                    if (r.get("provenance") or {}).get("train_step_measured") is not None
+                ),
+                key=lambda r: r["provenance"]["train_step_measured"],
+            )
+            base = next(
+                (r for r in rs if (r.get("provenance") or {}).get("train_step_measured") is None),
+                None,
+            )
+            mans = {mnames.get(r.get("manifest_hash"), str(r.get("manifest_hash"))[:12]) for r in rs}
+            print(f"\n{name} - {len(rs)} runs on {', '.join(sorted(mans))}")
+            if not ckpts:
+                continue
+            steps = [r["provenance"]["train_step_measured"] for r in ckpts]
+            print(f"  checkpoints  {len(ckpts)} (steps {steps[0]}..{steps[-1]})")
+            divdir, effdir = store.path / "divergence", store.path / "effort"
+            have_div = {r["run_id"] for r in ckpts
+                        if any(divdir.glob(f"*__{r['run_id']}.parquet"))}
+            have_eff = {r["run_id"] for r in ckpts
+                        if any(effdir.glob(f"{r['run_id']}__*.parquet"))}
+            # reuse the pair this study already uses, e.g. run__0.2_0.9.parquet
+            pair = next(
+                (f.stem.split("__")[1] for r in ckpts
+                 for f in effdir.glob(f"{r['run_id']}__*.parquet")),
+                "LOW,HIGH",
+            ).replace("_", ",")
+            for kind, have, hint in (
+                ("divergence", have_div, "diverge --base {b} --ckpt {c}"),
+                ("effort gap", have_eff, "effort --run {c} --pair " + pair),
+            ):
+                miss = [r for r in ckpts if r["run_id"] not in have]
+                if not miss:
+                    print(f"  {kind:<12} {len(have)}/{len(ckpts)} checkpoints")
+                    continue
+                msteps = ", ".join(str(r["provenance"]["train_step_measured"]) for r in miss)
+                print(f"  {kind:<12} {len(have)}/{len(ckpts)} checkpoints  missing: step {msteps}")
+                c = f"{name}/{miss[0].get('label') or miss[0]['run_id']}"
+                b = f"{name}/{base.get('label') or base['run_id']}" if base else "BASE"
+                print(f"    fill: flipbook {hint.format(b=b, c=c)}")
+        return 0
+    if args.cmd in ("runs", "evals"):
+        store = _store(args)
+        if args.json:
+            print(json.dumps(store.runs(args.study), indent=2, default=str))
+            return 0
+        def step(r):
+            return (r.get("train_step")
+                    or (r.get("provenance") or {}).get("train_step_measured") or -1)
         # manifest_hash -> name, so the table shows which eval each run targets
         mnames = {
             d["manifest_hash"]: d["name"]
@@ -307,16 +626,28 @@ def main(argv: list[str] | None = None) -> int:
             row = store.resolve_row(rec["manifest_hash"], args.row)
         except LookupError as e:
             raise SystemExit(str(e)) from e
-        print(f"run {rec['run_id']}  ({rec.get('study') or '-'}/{rec.get('label') or '-'})")
-        print(textwrap.fill("Q: " + question_text(row["messages"]), 100))
-        print(f"gold: {row['gold']!r}   grader: {row['grader_id']}")
-        from flipbook.decode import thinking
-
         tbl = store.samples(rec["run_id"])
         samples = sorted(
             (r for r in tbl.to_pylist() if r["row_id"] == row["row_id"]),
             key=lambda r: r["sample_idx"],
         )
+        if args.json:
+            print(json.dumps(
+                {
+                    "run_id": rec["run_id"],
+                    "study": rec.get("study"),
+                    "label": rec.get("label"),
+                    "row": row,
+                    "samples": samples,
+                },
+                indent=2, default=str,
+            ))
+            return 0
+        print(f"run {rec['run_id']}  ({rec.get('study') or '-'}/{rec.get('label') or '-'})")
+        print(textwrap.fill("Q: " + question_text(row["messages"]), 100))
+        print(f"gold: {row['gold']!r}   grader: {row['grader_id']}")
+        from flipbook.decode import thinking
+
         if not samples:
             print("  (no samples for this row)")
         for s in samples:
@@ -395,7 +726,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"flips: {len(pair.flips)}  "
                   f"truncation {pair.truncation_rate_a:.2f} → {pair.truncation_rate_b:.2f}  "
                   f"cost ${pair.cost_a:.3f} vs ${pair.cost_b:.3f}")
-            fk = lambda d: ", ".join(f"{k}×{v}" for k, v in sorted(d.items())) or "none"
+            def fk(d):
+                return ", ".join(f"{k}×{v}" for k, v in sorted(d.items())) or "none"
             print(f"failure kinds: a: {fk(pair.failures['a'])}   b: {fk(pair.failures['b'])}")
             for n in sorted(pair.passn, key=int):
                 e = pair.passn[n]
@@ -470,9 +802,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"imported {n} metric rows for study {args.study}")
         return 0
     if args.cmd == "serve":
-        from flipbook.api import serve
-        print(f"serving {args.store} at http://{args.host}:{args.port}")
-        serve(args.store, host=args.host, port=args.port)
+        from flipbook.api import load_env_file, serve
+        loaded = load_env_file(Path(args.env_file).expanduser())
+        if loaded:
+            print(f"loaded {', '.join(loaded)} from {args.env_file}", flush=True)
+        print(f"serving {args.store} at http://{args.host}:{args.port}", flush=True)
+        serve(args.store, host=args.host, port=args.port, open_browser=not args.no_open)
         return 0
     return 1
 

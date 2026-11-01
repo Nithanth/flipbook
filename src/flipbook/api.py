@@ -5,6 +5,7 @@ compare results are LRU-cached since they're pure functions of the store.
 """
 
 import json
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -40,31 +41,73 @@ def _norm_run(r: dict) -> dict:
     return r
 
 
+def _downsample(xs: list[float], n: int = 512) -> list[float]:
+    """Mean-pool-adjacent: keep each bin's largest-magnitude value (with sign),
+    so spikes survive the compression that sparklines apply anyway."""
+    if len(xs) <= n:
+        return xs
+    out = []
+    step = len(xs) / n
+    for i in range(n):
+        seg = xs[int(i * step) : int((i + 1) * step)]
+        out.append(max(seg, key=abs) if seg else 0.0)
+    return out
+
+
 def create_app(store_path: str | Path) -> FastAPI:
     store = Store(str(store_path))
     app = FastAPI(title="flipbook", docs_url="/api/docs")
 
-    # cache paired stats, expensiveish
+    # short-TTL read cache: repeated row clicks shouldn't re-read parquets, but
+    # an eval landing mid-session should still show up without a restart
+    _cache: dict[str, tuple[float, object]] = {}
+
+    def _cached(key: str, fn, ttl: float = 5.0):
+        ent = _cache.get(key)
+        if ent and time.time() - ent[0] < ttl:
+            return ent[1]
+        v = fn()
+        _cache[key] = (time.time(), v)
+        return v
+
+    def _samples(rid: str):
+        return _cached(f"samples:{rid}", lambda: store.samples(rid))
+
+    def _mrows(mh: str):
+        return _cached(f"mrows:{mh}", lambda: store.manifest_rows(mh))
+
+    def _run_list(study: str | None = None):
+        all_runs = _cached("runs", store.runs)
+        return [r for r in all_runs if not study or r.get("study") == study]
+
+    def _divergence(a: str, b: str):
+        return _cached(f"div:{a}__{b}", lambda: store.divergence(a, b))
+
+    # cache paired stats, expensiveish - keyed on sample counts so an eval
+    # still accumulating mid-session re-reads instead of serving stale rows
     @lru_cache(maxsize=32)
-    def _compare(a: str, b: str) -> dict:
+    def _compare(a: str, b: str, sig: tuple[int, int]) -> dict:
         from dataclasses import asdict
         return asdict(compare(store, a, b))
+
+    def _compare_live(a: str, b: str) -> dict:
+        return _compare(a, b, (_samples(a).num_rows, _samples(b).num_rows))
 
     @app.get("/api/manifests")
     def manifests() -> list[dict]:
         out = []
         for f in sorted((store.path / "manifests").glob("*.json")):
             doc = json.loads(f.read_text())
-            doc["n_rows"] = len(store.manifest_rows(doc["manifest_hash"]))
+            doc["n_rows"] = len(_mrows(doc["manifest_hash"]))
             out.append(doc)
         return out
 
     @app.get("/api/runs")
     def runs(study: str | None = None) -> list[dict]:
         out = []
-        for r in store.runs(study):
+        for r in _run_list(study):
             r = _norm_run(r)
-            t = store.samples(r["run_id"])
+            t = _samples(r["run_id"])
             vs = [v for v in t.column("verdict").to_pylist() if v is not None]
             r["acc"] = sum(vs) / len(vs) if vs else None
             out.append(r)
@@ -72,7 +115,7 @@ def create_app(store_path: str | Path) -> FastAPI:
 
     @app.get("/api/runs/{run_id}/samples")
     def samples(run_id: str, full: bool = False) -> list[dict]:
-        tbl = store.samples(run_id)
+        tbl = _samples(run_id)
         # store.samples returns an empty table for unknown ids
         # empty 200 would read as "ran, zero rows", so check the file directly
         if tbl.num_rows == 0 and not (store.path / "samples" / f"{run_id}.parquet").exists():
@@ -84,7 +127,7 @@ def create_app(store_path: str | Path) -> FastAPI:
         for rid in (a, b):
             if not (store.path / "samples" / f"{rid}.parquet").exists():
                 raise HTTPException(404, f"no run {rid}")
-        report = _compare(a, b)
+        report = _compare_live(a, b)
         if blocks := report["comparability"].get("blocks"):
             raise HTTPException(422, "; ".join(blocks))
         return report
@@ -96,10 +139,10 @@ def create_app(store_path: str | Path) -> FastAPI:
         for rid in (a, b):
             if not (store.path / "samples" / f"{rid}.parquet").exists():
                 raise HTTPException(404, f"no run {rid}")
-        run_a = next((r for r in store.runs() if r["run_id"] == a), None) or {}
+        run_a = next((r for r in _run_list() if r["run_id"] == a), None) or {}
         mh = run_a.get("manifest_hash")
         mrows = (
-            store.manifest_rows(mh)
+            _mrows(mh)
             if mh and (store.path / "manifest_rows" / f"{mh}.parquet").exists()
             else []
         )
@@ -110,9 +153,9 @@ def create_app(store_path: str | Path) -> FastAPI:
                 "verdict", "extracted", "failure_kind", "grade_note"}
 
         def side(rid: str) -> list[dict]:
-            run = next((r for r in store.runs() if r["run_id"] == rid), None) or {}
+            run = next((r for r in _run_list() if r["run_id"] == rid), None) or {}
             model_id = run.get("model_id") or run.get("model")
-            tbl = store.samples(rid)
+            tbl = _samples(rid)
             # token_ids is the heavy column; filter to this row before materializing
             tbl = tbl.filter(pc.equal(tbl.column("row_id"), row))
             out = []
@@ -123,7 +166,7 @@ def create_app(store_path: str | Path) -> FastAPI:
                 out.append(s)
             return sorted(out, key=lambda r: r["sample_idx"])
 
-        run_b = next((r for r in store.runs() if r["run_id"] == b), None) or {}
+        run_b = next((r for r in _run_list() if r["run_id"] == b), None) or {}
         return {
             "row_id": row,
             "question": mrow["messages"],
@@ -139,24 +182,45 @@ def create_app(store_path: str | Path) -> FastAPI:
         d = store.path / "divergence"
         if not d.exists():
             return []
-        return [
-            {"base": f.stem.split("__")[0], "ckpt": f.stem.split("__")[1]}
-            for f in sorted(d.glob("*.parquet"))
-        ]
+        out = []
+        for f in sorted(d.glob("*.parquet")):
+            base, ckpt = f.stem.split("__")
+            sums = _divergence(base, ckpt).column("sum_nats").to_pylist()
+            out.append({
+                "base": base,
+                "ckpt": ckpt,
+                "self": base == ckpt,
+                "median_nats": sorted(sums)[len(sums) // 2] if sums else 0.0,
+                "max_abs_nats": max((abs(x) for x in sums), default=0.0),
+            })
+        floor = max((p["max_abs_nats"] for p in out if p["self"]), default=None)
+        for p in out:
+            p["noise_floor"] = floor
+        # most-diverged real pairs first; the A/A noise floor sorts last
+        out.sort(key=lambda p: (p["self"], -abs(p["median_nats"])))
+        return out
 
     @app.get("/api/divergence")
     def divergence(base: str = Query(...), ckpt: str = Query(...)) -> list[dict]:
         f = store.path / "divergence" / f"{base}__{ckpt}.parquet"
         if not f.exists():
             raise HTTPException(404, f"no divergence for {base} vs {ckpt}")
-        from flipbook.manifest import question_text
+        from flipbook.manifest import question_text, truncate_q
 
-        run = next((r for r in store.runs() if r["run_id"] == base), {})
+        run = next((r for r in _run_list() if r["run_id"] == base), {})
         qtext = {
-            r["row_id"]: question_text(r["messages"]).replace("\n", " ")[:120]
-            for r in store.manifest_rows(run.get("manifest_hash") or "")
+            r["row_id"]: truncate_q(question_text(r["messages"]))
+            for r in _mrows(run.get("manifest_hash") or "")
         }
-        return [{**r, "q": qtext.get(r["row_id"])} for r in _rows(store.divergence(base, ckpt))]
+        # lp arrays are per-row drill-down data (trace/branch fetch them on
+        # expand); the table only needs a compressed delta for the sparkline,
+        # so don't ship ~2MB of floats per row up front
+        out = []
+        for r in _rows(_divergence(base, ckpt), drop={"lp_base", "lp_ckpt"}):
+            r["delta"] = _downsample(r.get("delta") or [])
+            r["q"] = qtext.get(r["row_id"])
+            out.append(r)
+        return out
 
     @app.get("/api/divergence/branch")
     async def divergence_branch(
@@ -195,7 +259,7 @@ def create_app(store_path: str | Path) -> FastAPI:
         drow = next(
             (
                 r
-                for r in _rows(store.divergence(base, ckpt))
+                for r in _rows(_divergence(base, ckpt))
                 if r["row_id"] == row and r["sample_idx"] == sample
             ),
             None,
@@ -205,7 +269,7 @@ def create_app(store_path: str | Path) -> FastAPI:
         srow = next(
             (
                 r
-                for r in _rows(store.samples(base))
+                for r in _rows(_samples(base))
                 if r["row_id"] == row and r["sample_idx"] == sample
             ),
             None,
@@ -213,7 +277,7 @@ def create_app(store_path: str | Path) -> FastAPI:
         ids = (srow or {}).get("token_ids")
         if not ids:
             raise HTTPException(404, "no baseline token ids for this sample")
-        run = next((r for r in store.runs() if r["run_id"] == base), {})
+        run = next((r for r in _run_list() if r["run_id"] == base), {})
         model_id = run.get("model_id") or run.get("model")
         if not model_id:
             raise HTTPException(404, f"no model recorded on run {base}")
@@ -259,13 +323,13 @@ def create_app(store_path: str | Path) -> FastAPI:
     def studies() -> list[str]:
         d = store.path / "training_metrics"
         names = {f.stem for f in d.glob("*.parquet")} if d.exists() else set()
-        names |= {r["study"] for r in store.runs() if r.get("study")}
+        names |= {r["study"] for r in _run_list() if r.get("study")}
         return sorted(names)
 
     @app.get("/api/studies/{name}")
     def study_detail(name: str) -> dict:
         sruns = sorted(
-            (_norm_run(r) for r in store.runs(name)),
+            (_norm_run(r) for r in _run_list(name)),
             key=lambda r: r.get("train_step") if r.get("train_step") is not None else -1,
         )
         if not sruns:
@@ -310,7 +374,40 @@ def create_app(store_path: str | Path) -> FastAPI:
     return app
 
 
-def serve(store_path: str | Path, host: str = "127.0.0.1", port: int = 8484) -> None:
+def load_env_file(path: Path) -> list[str]:
+    """Export KEY=VALUE lines from a dotenv file into os.environ; returns the
+    names set. Existing values win - never overrides what the shell gave us."""
+    import os
+
+    if not path.exists():
+        return []
+    names = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k = k.strip().removeprefix("export ").strip()
+        if k and k not in os.environ:
+            os.environ[k] = v.strip().strip("'\"")
+            names.append(k)
+    return names
+
+
+def serve(
+    store_path: str | Path,
+    host: str = "127.0.0.1",
+    port: int = 8484,
+    open_browser: bool = True,
+) -> None:
+    import threading
+    import webbrowser
+
     import uvicorn
 
+    url = f"http://{host}:{port}"
+    if open_browser:
+        # fire after bind; a short timer is simpler than wiring a uvicorn
+        # startup hook for a one-shot convenience
+        threading.Timer(0.8, webbrowser.open, args=(url,)).start()
     uvicorn.run(create_app(store_path), host=host, port=port)

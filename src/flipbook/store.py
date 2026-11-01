@@ -119,6 +119,10 @@ class Store:
         )
         _write_parquet(tbl, self._dir("manifest_rows") / f"{h}.parquet")
 
+    def manifests(self) -> list[dict]:
+        return [json.loads(f.read_text())
+                for f in sorted((self.path / "manifests").glob("*.json"))]
+
     def manifest_doc(self, name_or_hash: str) -> dict | None:
         for f in sorted((self.path / "manifests").glob("*.json")):
             doc = json.loads(f.read_text())

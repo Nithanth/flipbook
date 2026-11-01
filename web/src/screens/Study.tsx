@@ -19,7 +19,7 @@ export default function Study() {
     });
   }, []);
 
-  // default: the study with the most runs — that's the story, not the leftovers
+  // default: the study with the most runs - that's the story, not the leftovers
   useEffect(() => {
     if (study || !studies.length) return;
     const counts = new Map<string, number>();
@@ -32,11 +32,23 @@ export default function Study() {
     if (!study) return;
     setDetail(null);
     setErr(null);
-    api.study(study).then(setDetail).catch((e) => setErr(String(e)));
+    const load = () =>
+      api
+        .study(study)
+        .then((d) => {
+          setDetail(d);
+          setTouched(new Date());
+        })
+        .catch((e) => setErr(String(e)));
+    load();
+    // poll while open so checkpoints eval'd mid-training land without a reload
+    const t = setInterval(load, 8000);
+    return () => clearInterval(t);
   }, [study]);
 
   const derived = useMemo(() => (detail ? derive(detail) : null), [detail]);
   const [focus, setFocus] = useState<string | null>(null);
+  const [touched, setTouched] = useState<Date | null>(null);
 
   const base = detail?.runs.find(
     (r) => r.label === "baseline" || r.label === "base" || r.train_step == null,
@@ -53,7 +65,7 @@ export default function Study() {
   return (
     <>
       <h1>study</h1>
-      <p className="page-sub">what did this training run do to the model's behavior?</p>
+      <p className="page-sub">one training run, every checkpoint: did the eval move, and what moved first?</p>
       <div className="row">
         <label>
           study{" "}
@@ -67,14 +79,25 @@ export default function Study() {
           <span className="sub">
             {detail.runs.length} runs · {nEvals} eval points
             {models.length === 1 ? ` · ${models[0]}` : ""}
+            {touched ? ` · live · updated ${touched.toLocaleTimeString()}` : ""}
           </span>
         )}
       </div>
       {err && <p className="err">{err}</p>}
-      {detail && derived && (
+      {detail && derived && derived.rows.length === 0 && (
+        <div className="card read">
+          <div className="mini-label">no training metrics</div>
+          <p>
+            this study has {detail.runs.length} eval run{detail.runs.length === 1 ? "" : "s"} but no
+            tracked training loop - there's no step axis to chart. pair runs up in{" "}
+            <a href="#/compare">compare</a> or browse them under <a href="#/evals">evals</a>.
+          </p>
+        </div>
+      )}
+      {detail && derived && derived.rows.length > 0 && (
         <>
           <Hero d={derived} go={go} />
-          <Narrative d={derived} />
+          <Narrative d={derived} runs={detail.runs} />
           <MetricStrip d={derived} focus={focus} onFocus={setFocus} go={go} />
           <StepTable d={derived} runs={detail.runs} />
         </>
@@ -100,9 +123,22 @@ interface StepRow {
   effortGap?: number;
 }
 
+/** Round x ticks: smallest 1/2/5/8-ish step that yields <=6 ticks. Shared by
+ *  the hero and focus charts so they line up. */
+function tickSteps(x0: number, x1: number): number[] {
+  const span = Math.max(1, x1 - x0);
+  const step =
+    [1, 2, 4, 5, 8, 10, 16, 20, 25, 32, 40, 50, 64, 80, 100, 128, 160, 200, 256, 320, 500, 640, 1000]
+      .find((t) => span / t <= 6) ?? Math.ceil(span / 6);
+  const out: number[] = [];
+  for (let x = Math.ceil(x0 / step) * step; x <= x1; x += step) out.push(x);
+  return out;
+}
+
 interface Derived {
   rows: StepRow[];
   metricKeys: string[];
+  lossKey: string | null;
   lossSeries: { step: number; value: number }[];
   epochStarts: number[];
 }
@@ -132,7 +168,10 @@ function derive(detail: StudyDetail): Derived {
   const div = pick("/divergence_mean_nats");
   const pSkip = pick("/p_skip");
   const cost = pick("/cost_usd");
-  const lossSeries = m["train_mean_nll"] ?? m["train_mean_bpb"] ?? [];
+  // next-token nll for SFT runs; bpb is the same quantity in bits.
+  // other recipes (RL) log different keys and just show no loss line
+  const lossKey = ["train_mean_nll", "train_mean_bpb"].find((k) => m[k]?.length) ?? null;
+  const lossSeries = lossKey ? m[lossKey] : [];
 
   // epoch boundaries: steps where the epoch counter ticks up
   const epochKey = Object.keys(m).find((x) => x === "epoch" || x.endsWith("/epoch"));
@@ -175,10 +214,10 @@ function derive(detail: StudyDetail): Derived {
     loss: lossSeries.find((s) => s.step === step)?.value,
     effortGap: gapByStep.get(step),
   }));
-  return { rows, metricKeys: Object.keys(m), lossSeries, epochStarts };
+  return { rows, metricKeys: Object.keys(m), lossKey, lossSeries, epochStarts };
 }
 
-/** pass1 (left axis) vs train loss (right axis) — the collision chart. */
+/** pass1 (left axis) vs train loss (right axis) - the collision chart. */
 function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
   const [hover, setHover] = useState<number | null>(null);
   const pts = d.rows.filter((r) => r.pass1 != null);
@@ -192,7 +231,11 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
   const x0 = Math.min(...allSteps);
   const x1 = Math.max(...allSteps);
   const sx = (x: number) => pad + ((x - x0) / Math.max(1, x1 - x0)) * (w - 2 * pad);
+  const xticks = tickSteps(x0, x1);
   const syPass = (y: number) => h - pad - Math.max(0, Math.min(1, y)) * (h - 2 * pad);
+  // 1-indexed data pass containing this step (boundaries are where the
+  // logged epoch counter ticks up)
+  const epochAt = (s: number) => 1 + d.epochStarts.filter((e) => e <= s).length;
   const syLoss = (y: number) => h - pad - (y / lossMax) * (h - 2 * pad);
 
   const passPath = pts.map((r, i) => `${i ? "L" : "M"}${sx(r.step)},${syPass(r.pass1!)}`).join(" ");
@@ -200,7 +243,7 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
     .map((r, i) => `${i ? "L" : "M"}${sx(r.step)},${syLoss(r.value)}`)
     .join(" ");
 
-  // snap to every logged step — evals are sparse, loss lands every step
+  // snap to every logged step - evals are sparse, loss lands every step
   const hoverSteps = [
     ...new Set([...pts.map((r) => r.step), ...d.lossSeries.map((s) => s.step)]),
   ].sort((a, b) => a - b);
@@ -233,8 +276,10 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
   return (
     <div className="hero">
       <svg
-        width={w}
-        height={h}
+        viewBox={`0 0 ${w} ${h}`}
+        width="100%"
+        height="auto"
+        preserveAspectRatio="xMidYMid meet"
         className="chart"
         onMouseMove={onMove}
         onMouseLeave={() => setHover(null)}
@@ -242,6 +287,14 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
         <line x1={pad} x2={w - pad} y1={h - pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
         <line x1={pad} x2={pad} y1={pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
         <line x1={w - pad} x2={w - pad} y1={pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
+        {/* mid gridline at 50% pass + x ticks */}
+        <line x1={pad} x2={w - pad} y1={syPass(0.5)} y2={syPass(0.5)} style={{ stroke: "var(--border)" }} strokeDasharray="2 5" strokeOpacity={0.7} />
+        {xticks.map((x) => (
+          <g key={x}>
+            <line x1={sx(x)} x2={sx(x)} y1={h - pad} y2={h - pad + 4} style={{ stroke: "var(--muted)" }} strokeOpacity={0.6} />
+            <text x={sx(x)} y={h - pad + 16} textAnchor="middle" fontSize={10} style={{ fill: "var(--muted)" }}>{x}</text>
+          </g>
+        ))}
         {d.epochStarts.map((s, i) => (
           <g key={s}>
             <line
@@ -252,15 +305,16 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
               style={{ stroke: "var(--border)" }}
               strokeDasharray="2 4"
             />
-            <text x={sx(s) + 3} y={pad - 6} fontSize={10} style={{ fill: "var(--muted)" }}>
-              {`epoch ${i + 1}`}
-            </text>
+            {/* fat invisible sibling so a 1px dashed line is hoverable */}
+            <line x1={sx(s)} x2={sx(s)} y1={pad} y2={h - pad} strokeWidth={10} stroke="transparent">
+              <title>{`epoch ${i + 2} begins (step ${s}) - the optimizer starts another pass over the training set`}</title>
+            </line>
           </g>
         ))}
         {lossPath && (
           <path d={lossPath} fill="none" style={{ stroke: "var(--accent2)" }} strokeWidth={1.4} strokeDasharray="4 3" />
         )}
-        <path d={passPath} fill="none" style={{ stroke: "var(--accent)" }} strokeWidth={2} />
+        <path d={passPath} fill="none" style={{ stroke: "var(--accent)" }} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
         {pts.map((r) => (
           <circle
             key={r.step}
@@ -271,11 +325,11 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
             strokeWidth={1.5}
             onClick={() => go(r.step)}
           >
-            <title>{`step ${r.step}: pass1 ${(r.pass1! * 100).toFixed(1)}% — click to compare`}</title>
+            <title>{`step ${r.step} (epoch ${epochAt(r.step)}): pass1 ${(r.pass1! * 100).toFixed(1)}% - click to compare`}</title>
           </circle>
         ))}
         {hover != null && (
-          <g pointerEvents="none">
+          <g pointerEvents="none" className="hovmark">
             <line
               x1={sx(hover)}
               x2={sx(hover)}
@@ -307,7 +361,7 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
               x={sx(hover) > w - 190 ? sx(hover) - 176 : sx(hover) + 14}
               y={pad + 6}
               lines={[
-                [`step ${hover}`, "var(--text)", true],
+                [`step ${hover} · epoch ${epochAt(hover)}`, "var(--text)", true],
                 ...(hovRow
                   ? ([[`pass@1 ${(hovRow.pass1! * 100).toFixed(1)}%`, "var(--accent)", false]] as [string, string, boolean][])
                   : []),
@@ -321,9 +375,7 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
         <text x={6} y={pad} style={{ fill: "var(--accent)" }} fontSize={11}>100%</text>
         <text x={6} y={h - pad} style={{ fill: "var(--accent)" }} fontSize={11}>0%</text>
         <text x={w - pad + 6} y={pad} style={{ fill: "var(--accent2)" }} fontSize={11}>{lossMax.toPrecision(2)}</text>
-        <text x={pad} y={h - 12} style={{ fill: "var(--muted)" }} fontSize={11}>{x0}</text>
-        <text x={w - pad - 20} y={h - 12} style={{ fill: "var(--muted)" }} fontSize={11}>{x1}</text>
-        <text x={w / 2} y={h - 12} textAnchor="middle" style={{ fill: "var(--muted)" }} fontSize={11}>
+        <text x={w / 2} y={h - 4} textAnchor="middle" style={{ fill: "var(--muted)" }} fontSize={11}>
           optimizer step →
         </text>
         <text x={w - pad + 6} y={h - pad} style={{ fill: "var(--accent2)" }} fontSize={11}>0</text>
@@ -332,15 +384,17 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
         <Tip text="Fraction of frozen eval questions answered correctly at this checkpoint (left axis). Click a point to compare that step against baseline.">
           <span style={{ color: "var(--accent)" }}>━ pass@1 (click a point)</span>
         </Tip>
-        <Tip text={`Training loss on the fine-tuning batches — what the optimizer sees (right axis). Logged every optimizer step (one batch); evals run every ${evalGap ?? "?"} steps. It can keep falling while eval behavior collapses; that's the collision this chart exists to show.`}>
-          <span style={{ color: "var(--accent2)" }}>┅ train_mean_nll</span>
-        </Tip>
+        {d.lossKey && (
+          <Tip text={`${d.lossKey}: training loss on the fine-tuning batches - what the optimizer sees (right axis). Logged every optimizer step (one batch); evals run every ${evalGap ?? "?"} steps. It can keep falling while eval behavior collapses; that's the collision this chart exists to show.`}>
+            <span style={{ color: "var(--accent2)" }}>┅ {d.lossKey}</span>
+          </Tip>
+        )}
       </div>
       <p className="sub" style={{ marginTop: 4 }}>
-        x = optimizer step (one training batch). nll is free — logged every step.
-        pass@1 is expensive — each dot is a full eval sweep
-        {evalGap ? `, so it runs every ${evalGap} steps` : ""}; the gaps between
-        blue dots are where this tool's job is.
+        x = optimizer step (one training batch).
+        {d.lossSeries.length ? " train loss is logged every step; " : " "}
+        each pass@1 dot is a full eval sweep
+        {evalGap ? `, run every ${evalGap} steps` : ""}.
       </p>
     </div>
   );
@@ -383,35 +437,62 @@ function ChartTip({
   );
 }
 
-/** Plain-English takeaway, derived from the step rows — the chart shows it, this says it. */
-function Narrative({ d }: { d: Derived }) {
+/** Plain-English takeaway, derived from the step rows - the chart shows it, this says it. */
+function Narrative({ d, runs }: { d: Derived; runs: Run[] }) {
   const evals = d.rows.filter((r) => r.pass1 != null);
   if (evals.length < 2) return null;
   const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
-  const bullets: string[] = [];
+  const bullets: { t: string; href?: string }[] = [];
+  // every claim should be one click from its evidence
+  const base = runs.find((r) => r.train_step == null);
+  const atStep = (s: number) => runs.find((r) => r.train_step === s)?.run_id;
+  const cmp = (s: number) =>
+    base && atStep(s) ? `#/compare?a=${base.run_id}&b=${atStep(s)}` : undefined;
+  const div = (s: number) =>
+    base && atStep(s) ? `#/divergence?base=${base.run_id}&ckpt=${atStep(s)}` : undefined;
 
   const peak = evals.reduce((a, b) => (b.pass1! > a.pass1! ? b : a));
   const after = evals.filter((r) => r.step >= peak.step);
   const trough = after.reduce((a, b) => (b.pass1! < a.pass1! ? b : a));
   const last = evals[evals.length - 1];
-  if (peak.pass1! - trough.pass1! > 0.05) {
-    bullets.push(
-      `pass@1 peaked at ${pct(peak.pass1!)} (step ${peak.step}), then fell to ${pct(trough.pass1!)} by step ${trough.step}` +
-        (last.pass1! > trough.pass1! ? ` — ending at ${pct(last.pass1!)} (step ${last.step})` : ` and never recovered`),
-    );
-  } else {
-    bullets.push(
-      `pass@1 stayed flat through training (${pct(evals[0].pass1!)} → ${pct(last.pass1!)}) — no eval-visible regression`,
-    );
-  }
-
+  const first = evals[0];
+  const collapsed = peak.pass1! - trough.pass1! > 0.05 && last.pass1! < peak.pass1! - 0.05;
+  const improved = last.pass1! - first.pass1! > 0.05;
+  const verdict = collapsed
+    ? "the fine-tune regressed this eval"
+    : improved
+      ? "the fine-tune improved this eval"
+      : peak.pass1! - trough.pass1! > 0.05
+        ? "pass@1 dipped mid-training and recovered"
+        : "no eval-visible change";
   // did divergence move before the first significant accuracy drop?
   const cliff = evals.find((r) => r.ci && r.ci[1] < 0);
+  if (peak.pass1! - trough.pass1! > 0.05) {
+    // a "peak" inside the CI of the first point is noise - anchor on where it held
+    const realPeak = peak.step !== first.step && peak.ci && peak.ci[0] > 0;
+    const held = cliff ? evals[Math.max(0, evals.indexOf(cliff) - 1)] : peak;
+    const open = realPeak
+      ? `pass@1 rose to ${pct(peak.pass1!)} (step ${peak.step})`
+      : `pass@1 held near ${pct(first.pass1!)} through step ${held.step}`;
+    bullets.push({
+      t:
+        `${open}, then fell to ${pct(trough.pass1!)} by step ${trough.step}` +
+        (last.pass1! > trough.pass1! + 0.02 ? ` - ending at ${pct(last.pass1!)} (step ${last.step})` : ` and stayed there`),
+      href: cmp(trough.step),
+    });
+  } else {
+    bullets.push({
+      t: `pass@1 stayed flat through training (${pct(evals[0].pass1!)} → ${pct(last.pass1!)}) - no eval-visible regression`,
+      href: cmp(last.step),
+    });
+  }
+
   const divMove = evals.find((r) => r.div != null && r.div < -50);
   if (cliff && divMove && divMove.step < cliff.step) {
-    bullets.push(
-      `divergence crossed −50 nats at step ${divMove.step} — ${cliff.step - divMove.step} steps before pass@1's first statistically significant drop (step ${cliff.step})`,
-    );
+    bullets.push({
+      t: `divergence moved first: ${divMove.div!.toFixed(0)} nats at step ${divMove.step}, ${cliff.step - divMove.step} steps before the first significant pass@1 drop (step ${cliff.step})`,
+      href: div(divMove.step),
+    });
   }
 
   const gaps = evals.filter((r) => r.effortGap != null);
@@ -419,33 +500,49 @@ function Narrative({ d }: { d: Derived }) {
     const g0 = gaps[0].effortGap!;
     const dead = gaps.find((g) => g.effortGap! < Math.max(20, g0 * 0.1));
     if (dead)
-      bullets.push(
-        `effort conditioning collapsed at step ${dead.step} (${g0.toFixed(0)} → ${dead.effortGap!.toFixed(0)} nats)`,
-      );
+      bullets.push({
+        t: `effort conditioning collapsed at step ${dead.step} (${g0.toFixed(0)} → ${dead.effortGap!.toFixed(0)} nats)`,
+        href: cmp(dead.step),
+      });
   }
 
+  // first -> last, not global extremes: a transient spike is not the story
   const gt = evals.filter((r) => r.genTok != null && r.genTok > 0);
   if (gt.length >= 2) {
-    const hi = gt.reduce((a, b) => (b.genTok! > a.genTok! ? b : a));
-    const lo = gt.reduce((a, b) => (b.genTok! < a.genTok! ? b : a));
-    if (hi.genTok! / Math.max(1, lo.genTok!) > 3)
-      bullets.push(
-        `response length shifted ${(hi.genTok! / lo.genTok!).toFixed(0)}× (${hi.genTok!.toFixed(0)} → ${lo.genTok!.toFixed(0)} tokens) — the output regime changed, not just accuracy`,
-      );
+    const a = gt[0].genTok!;
+    const b = gt[gt.length - 1].genTok!;
+    const ratio = Math.max(a, b) / Math.max(1, Math.min(a, b));
+    if (ratio > 3)
+      bullets.push({
+        t: `responses went from ${a.toFixed(0)} to ${b.toFixed(0)} tokens (${ratio.toFixed(0)}× ${b < a ? "shorter" : "longer"}) - ${
+          b < a
+            ? "the model stopped reasoning at length, it did not just get answers wrong"
+            : "the model is writing far more per question than it used to"
+        }`,
+        href: cmp(gt[gt.length - 1].step),
+      });
   }
 
   const tr = evals.filter((r) => r.trunc != null).reduce((a, b) => (b.trunc! > (a?.trunc ?? -1) ? b : a), evals[0]);
   if (tr?.trunc != null && tr.trunc > 0.25)
-    bullets.push(
-      `truncation peaked at ${(tr.trunc * 100).toFixed(0)}% (step ${tr.step}) — the model was rambling into the token cap`,
-    );
+    bullets.push({
+      t: `truncation peaked at ${(tr.trunc * 100).toFixed(0)}% (step ${tr.step}) - the model was rambling into the token cap`,
+      href: cmp(tr.step),
+    });
 
   return (
     <div className="card read">
       <div className="mini-label">the read</div>
-      {bullets.slice(0, 4).map((b) => (
-        <p key={b}>{b}</p>
-      ))}
+      <p className="verdict">{verdict}</p>
+      {bullets.slice(0, 4).map((b) =>
+        b.href ? (
+          <p key={b.t}>
+            <a href={b.href}>{b.t}</a>
+          </p>
+        ) : (
+          <p key={b.t}>{b.t}</p>
+        ),
+      )}
     </div>
   );
 }
@@ -462,12 +559,12 @@ function MetricStrip({
   go: (step: number) => void;
 }) {
   const cards: [string, string, (r: StepRow) => number | undefined, (v: number) => string][] = [
-    ["pass@k", "fraction of questions where at least one of the k samples was correct — the headroom above pass@1", (r) => r.passK, (v) => `${(v * 100).toFixed(1)}%`],
-    ["divergence (nats)", "How far the checkpoint's token probabilities moved from base on the baseline's own reasoning traces. ~0 = unchanged policy; very negative = the internals shifted hard — often before accuracy shows it.", (r) => r.div, (v) => v.toFixed(0)],
-    ["mean gen tokens", "Average response length. A sudden drop or spike signals a degenerate output regime (rambling into the cap, or collapsing to short format-locked answers).", (r) => r.genTok, (v) => v.toFixed(0)],
+    ["pass@k", "fraction of questions where at least one of the k samples was correct - the headroom above pass@1", (r) => r.passK, (v) => `${(v * 100).toFixed(1)}%`],
+    ["divergence (nats)", "How far the checkpoint's token probabilities moved from base on the baseline's own reasoning traces. ~0 = unchanged policy; very negative = the internals shifted hard - often before accuracy shows it.", (r) => r.div, (v) => v.toFixed(0)],
+    ["mean gen tokens", "Average response length. A sudden drop or spike means the model changed how it answers (rambling into the cap, or collapsing to short format-locked answers).", (r) => r.genTok, (v) => v.toFixed(0)],
     ["truncation", "Fraction of samples that hit the max-token cap before finishing. High truncation = the model rambles and never emits a final answer.", (r) => r.trunc, (v) => `${(v * 100).toFixed(0)}%`],
     ["effort gap (nats)", "Log-prob difference between effort=0.9 and effort=0.2 prompts on the same trace. Large = effort conditioning still modulates the model; ~0 = the dial is dead.", (r) => r.effortGap, (v) => v.toFixed(0)],
-    ["p_skip", "The model's own probability of ending the response immediately (end-of-message as the first token). Rising p_skip = it increasingly wants to emit nothing.", (r) => r.pSkip, (v) => v.toPrecision(2)],
+    ["skip prob", "The model's own probability of ending the response immediately (end-of-message as the first token). Rising = it increasingly wants to emit nothing.", (r) => r.pSkip, (v) => v.toPrecision(2)],
     ["eval cost", "Sampling cost of this eval point, in USD.", (r) => r.cost, (v) => `$${v.toFixed(2)}`],
   ];
   const sel = cards.find(([label]) => label === focus);
@@ -487,7 +584,7 @@ function MetricStrip({
             <div className="mini-val">
               {(() => {
                 const vs = d.rows.filter((r) => get(r) != null);
-                return vs.length ? fmt(get(vs[vs.length - 1])!) : "—";
+                return vs.length ? fmt(get(vs[vs.length - 1])!) : "-";
               })()}
             </div>
           </div>
@@ -495,8 +592,13 @@ function MetricStrip({
       </div>
       {sel && (
         <FocusChart
+          key={sel[0]}
           label={sel[0]}
           pts={d.rows.filter((r) => sel[2](r) != null).map((r) => ({ x: r.step, y: sel[2](r)! }))}
+          ghost={d.rows.filter((r) => r.pass1 != null).map((r) => ({ x: r.step, y: r.pass1! }))}
+          ghostLabel="pass@1"
+          xDomain={[Math.min(...d.rows.map((r) => r.step)), Math.max(...d.rows.map((r) => r.step))]}
+          epochStarts={d.epochStarts}
           fmt={sel[3]}
           go={go}
         />
@@ -509,11 +611,21 @@ function MetricStrip({
 function FocusChart({
   label,
   pts,
+  ghost,
+  ghostLabel,
+  xDomain,
+  epochStarts,
   fmt,
   go,
 }: {
   label: string;
   pts: { x: number; y: number }[];
+  /** pass@1 drawn faintly behind the focused metric - the reference every
+   *  other metric is read against; kept on its own [0,1] scale */
+  ghost?: { x: number; y: number }[];
+  ghostLabel?: string;
+  xDomain: [number, number];
+  epochStarts: number[];
   fmt: (v: number) => string;
   go: (step: number) => void;
 }) {
@@ -521,12 +633,22 @@ function FocusChart({
   const w = 860;
   const h = 180;
   const pad = 44;
-  const [x0, x1] = [Math.min(...pts.map((p) => p.x)), Math.max(...pts.map((p) => p.x))];
+  // share the hero's x range so a metric that stops early (divergence not
+  // computed at the last step) shows as a gap, not a stretched line
+  const [x0, x1] = xDomain;
   const [y0, y1] = [Math.min(...pts.map((p) => p.y)), Math.max(...pts.map((p) => p.y))];
   const span = Math.max(1e-9, y1 - y0);
   const sx = (x: number) => pad + ((x - x0) / Math.max(1, x1 - x0)) * (w - 2 * pad);
   const sy = (y: number) => h - pad - ((y - y0) / span) * (h - 2 * pad);
+  const xticks = tickSteps(x0, x1);
+  const epochAt = (s: number) => 1 + epochStarts.filter((e) => e <= s).length;
   const path = pts.map((p, i) => `${i ? "L" : "M"}${sx(p.x)},${sy(p.y)}`).join(" ");
+  // ghost (pass@1) is always [0,1] so it shares the plot height directly
+  const gsy = (y: number) => h - pad - Math.max(0, Math.min(1, y)) * (h - 2 * pad);
+  const ghostPath =
+    ghost && ghost.length > 1
+      ? ghost.map((p, i) => `${i ? "L" : "M"}${sx(p.x)},${gsy(p.y)}`).join(" ")
+      : null;
   const hov = hover != null ? pts.find((p) => p.x === hover) : undefined;
   const onMove = (e: MouseEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -544,14 +666,28 @@ function FocusChart({
   };
   return (
     <svg
-      width={w}
-      height={h}
+      viewBox={`0 0 ${w} ${h}`}
+      width="100%"
+      height="auto"
+      preserveAspectRatio="xMidYMid meet"
       className="chart focus"
       onMouseMove={onMove}
       onMouseLeave={() => setHover(null)}
     >
       <line x1={pad} x2={w - pad} y1={h - pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
       <line x1={pad} x2={pad} y1={pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
+      {xticks.map((x) => (
+        <g key={x}>
+          <line x1={sx(x)} x2={sx(x)} y1={h - pad} y2={h - pad + 4} style={{ stroke: "var(--muted)" }} strokeOpacity={0.6} />
+          <text x={sx(x)} y={h - pad + 16} textAnchor="middle" fontSize={10} style={{ fill: "var(--muted)" }}>{x}</text>
+        </g>
+      ))}
+      {epochStarts.filter((e) => e > x0 && e < x1).map((e) => (
+        <line key={e} x1={sx(e)} x2={sx(e)} y1={pad} y2={h - pad} strokeDasharray="2 4" style={{ stroke: "var(--border)" }} />
+      ))}
+      {ghostPath && (
+        <path d={ghostPath} fill="none" style={{ stroke: "var(--muted)" }} strokeWidth={1.4} strokeDasharray="4 3" opacity={0.6} />
+      )}
       <path d={path} fill="none" style={{ stroke: "var(--accent)" }} strokeWidth={1.8} />
       {pts.map((p) => (
         <circle
@@ -563,7 +699,7 @@ function FocusChart({
           strokeWidth={1.5}
           onClick={() => go(p.x)}
         >
-          <title>{`step ${p.x}: ${fmt(p.y)} — click to compare`}</title>
+          <title>{`step ${p.x} (epoch ${epochAt(p.x)}): ${fmt(p.y)} - click to compare`}</title>
         </circle>
       ))}
       {hov && (
@@ -588,21 +724,27 @@ function FocusChart({
             x={sx(hov.x) > w - 190 ? sx(hov.x) - 176 : sx(hov.x) + 14}
             y={pad + 6}
             lines={[
-              [`step ${hov.x}`, "var(--text)", true],
+              [`step ${hov.x} · epoch ${epochAt(hov.x)}`, "var(--text)", true],
               [`${label}  ${fmt(hov.y)}`, "var(--accent)", false],
+              ...(ghost && ghostLabel
+                ? (() => {
+                    const g = ghost.find((p) => p.x === hov.x);
+                    return g
+                      ? ([[`${ghostLabel}  ${(g.y * 100).toFixed(1)}%`, "var(--muted)", false]] as [string, string, boolean][])
+                      : [];
+                  })()
+                : []),
             ]}
           />
         </g>
       )}
       <text x={6} y={pad} style={{ fill: "var(--muted)" }} fontSize={11}>{fmt(y1)}</text>
       <text x={6} y={h - pad} style={{ fill: "var(--muted)" }} fontSize={11}>{fmt(y0)}</text>
-      <text x={pad} y={h - 12} style={{ fill: "var(--muted)" }} fontSize={11}>{x0}</text>
-      <text x={w - pad - 20} y={h - 12} style={{ fill: "var(--muted)" }} fontSize={11}>{x1}</text>
-      <text x={w / 2} y={h - 12} textAnchor="middle" style={{ fill: "var(--muted)" }} fontSize={11}>
+      <text x={w / 2} y={h - 6} textAnchor="middle" style={{ fill: "var(--muted)" }} fontSize={11}>
         optimizer step →
       </text>
       <text x={w - pad} y={16} textAnchor="end" style={{ fill: "var(--muted)" }} fontSize={11}>
-        {label}
+        {label}{ghostLabel ? `  ·  ┅ ${ghostLabel}` : ""}
       </text>
     </svg>
   );
@@ -646,7 +788,7 @@ function StepTable({ d, runs }: { d: Derived; runs: Run[] }) {
           <tr>
             <th>step</th>
             <th><Tip text="Accuracy on the frozen eval manifest at this checkpoint.">pass@1</Tip></th>
-            <th><Tip text="fraction of questions where at least one of the k samples was correct — the headroom above pass@1">p@k</Tip></th>
+            <th><Tip text="fraction of questions where at least one of the k samples was correct - the headroom above pass@1">p@k</Tip></th>
             <th><Tip text="Paired per-question accuracy change vs baseline, with a bootstrap 95% CI over questions. Deltas inside the noise band (~±0.07 at n=30, k=2) are inconclusive.">Δ vs base</Tip></th>
             <th><Tip text="Questions that changed correctness vs baseline. R = right→wrong regressions, G = wrong→right gains. Noise flips are roughly symmetric; one-directional flips signal a real shift.">flips</Tip></th>
             <th><Tip text="Fraction of samples truncated at the max-token cap.">trunc</Tip></th>
@@ -668,28 +810,29 @@ function StepTable({ d, runs }: { d: Derived; runs: Run[] }) {
                 <td>
                   {link ? <a href={link}>step {r.step}</a> : `step ${r.step}`}
                 </td>
-                <td>{r.pass1 != null ? `${(r.pass1 * 100).toFixed(1)}%` : "—"}</td>
-                <td>{r.passK != null ? `${(r.passK * 100).toFixed(1)}%` : "—"}</td>
+                <td>{r.pass1 != null ? `${(r.pass1 * 100).toFixed(1)}%` : "-"}</td>
+                <td>{r.passK != null ? `${(r.passK * 100).toFixed(1)}%` : "-"}</td>
                 <td className={r.delta != null && r.delta < 0 ? "neg" : "pos"}>
                   {r.delta != null
                     ? `${r.delta >= 0 ? "+" : ""}${r.delta.toFixed(2)} [${r.ci?.[0].toFixed(2)}, ${r.ci?.[1].toFixed(2)}]`
-                    : "—"}
+                    : "-"}
                 </td>
                 <td>
-                  {r.regressions != null ? `${r.regressions}R/${r.gains}G` : "—"}
+                  {r.regressions != null ? `${r.regressions}R/${r.gains}G` : "-"}
                 </td>
-                <td>{r.trunc != null ? `${(r.trunc * 100).toFixed(0)}%` : "—"}</td>
-                <td>{r.genTok != null ? r.genTok.toFixed(0) : "—"}</td>
+                <td>{r.trunc != null ? `${(r.trunc * 100).toFixed(0)}%` : "-"}</td>
+                <td>{r.genTok != null ? r.genTok.toFixed(0) : "-"}</td>
                 <td className={r.div != null && r.div < -50 ? "neg" : ""}>
-                  {r.div != null ? r.div.toFixed(0) : "—"}
+                  {r.div != null ? r.div.toFixed(0) : "-"}
                 </td>
-                <td>{r.effortGap != null ? r.effortGap.toFixed(0) : "—"}</td>
-                <td>{r.cost != null ? `$${r.cost.toFixed(2)}` : "—"}</td>
+                <td>{r.effortGap != null ? r.effortGap.toFixed(0) : "-"}</td>
+                <td>{r.cost != null ? `$${r.cost.toFixed(2)}` : "-"}</td>
               </tr>
             );
           })}
         </tbody>
       </table>
+      <p className="sub" style={{ marginTop: 6 }}>- = not computed for this step (divergence and effort run on demand).</p>
     </>
   );
 }

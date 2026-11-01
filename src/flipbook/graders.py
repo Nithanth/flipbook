@@ -185,9 +185,11 @@ def grade(grader_id: str, text: str, gold: str) -> Grade:
     if grader_id in GRADERS:
         fn = GRADERS[grader_id][0]
     elif grader_id.startswith(_REGEX_PREFIX):
-        fn = lambda t, g: _grade_regex(grader_id, t, g)
+        def fn(t, g):
+            return _grade_regex(grader_id, t, g)
     elif ":" in grader_id:
-        fn = lambda t, g: _grade_custom(grader_id, t, g)
+        def fn(t, g):
+            return _grade_custom(grader_id, t, g)
     else:
         raise UnknownGraderError(_unknown_msg(grader_id))
     # WHY here, not per grader: an end-of-message-only generation must read as

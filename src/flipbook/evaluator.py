@@ -43,6 +43,7 @@ class RegressionEvaluator(SamplingClientEvaluator):
         study: str | None = None,
         seed: int = 0,
         concurrency: int = 8,
+        train_config: dict | None = None,
     ):
         self.manifest_name = manifest
         self.baseline = baseline
@@ -58,6 +59,7 @@ class RegressionEvaluator(SamplingClientEvaluator):
         self.study = study
         self.seed = seed
         self.concurrency = concurrency
+        self.train_config = train_config
         self.calls = 0
         self._baseline_rid: str | None = None
         self._resolved = None  # Resolved(base_model, renderer) — once per lifetime
@@ -173,6 +175,8 @@ class RegressionEvaluator(SamplingClientEvaluator):
         rec = json.loads(f.read_text())
         rec["provenance"]["train_step_measured"] = step
         rec["provenance"]["model_path"] = model_path
+        if self.train_config:
+            rec["provenance"]["train_config"] = self.train_config
         _write_json(rec, f)
     def _check_step_alignment(self, step: int, model_path: str) -> None:
         """Warn if calls*eval_every disagrees with checkpoints.jsonl."""

@@ -4,6 +4,10 @@ import { api, type BranchResult } from "./api";
 // same cumulative-nats threshold the backend's divergence_pos uses (diverge.TAU)
 const DIVERGE_TAU = 5.0;
 
+// renderer sentinels like <|content_thinking|> or {lt}x{gt} are real scored
+// tokens, but they're structure, not content - dim them
+const CTL = /^(<\|[^|]+\|>|\{lt\}.*\{gt\})$/;
+
 /** First token index where the cumulative Δlogprob crosses -TAU, else null. */
 export function firstDivPos(delta: number[]): number | null {
   let cum = 0;
@@ -14,25 +18,42 @@ export function firstDivPos(delta: number[]): number | null {
   return null;
 }
 
-/** Baseline trace text heat-mapped by per-token Δlogprob, with its legend. */
+/** Baseline trace text heat-mapped by per-token Δlogprob, with its legend.
+ *  onPick/cut wire "click a token to set the branch cut" through the parent. */
 export function Trace({
   tokens,
   mark,
+  onPick,
+  cut,
 }: {
   tokens: { t: string; d: number }[];
   mark?: number | null;
+  onPick?: (i: number) => void;
+  cut?: number | null;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const max = Math.max(1e-9, ...tokens.map((t) => Math.abs(t.d)));
-  // long traces wash out to uniform red — a windowed-mean strip above the text
+  // long traces wash out to uniform red - a windowed-mean strip above the text
   // keeps regional structure legible; clicking a bin scrolls the text to it
   const binN = Math.max(1, Math.ceil(tokens.length / 160));
-  const bins: { start: number; mean: number }[] = [];
+  const bins: { start: number; mean: number; sum: number }[] = [];
   for (let i = 0; i < tokens.length; i += binN) {
     const seg = tokens.slice(i, i + binN);
-    bins.push({ start: i, mean: seg.reduce((a, t) => a + t.d, 0) / seg.length });
+    const sum = seg.reduce((a, t) => a + t.d, 0);
+    bins.push({ start: i, mean: sum / seg.length, sum });
   }
   const binMax = Math.max(1e-9, ...bins.map((b) => Math.abs(b.mean)));
+  // hottest windows = jump targets so nobody scans 32k tokens by eye;
+  // de-dupe picks within 2 bins of each other, ignore trivial mass
+  const hot: typeof bins = [];
+  for (const b of [...bins].sort((x, y) => Math.abs(y.sum) - Math.abs(x.sum))) {
+    if (Math.abs(b.sum) < 5) break;
+    if (hot.some((h) => Math.abs(h.start - b.start) < binN * 2)) continue;
+    hot.push(b);
+    if (hot.length === 3) break;
+  }
+  hot.sort((a, b) => a.start - b.start);
+  const kfmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
   const jump = (start: number) => {
     const el = wrapRef.current?.querySelector(`[data-tok="${start}"]`);
     if (el instanceof HTMLElement && wrapRef.current) {
@@ -42,18 +63,19 @@ export function Trace({
   return (
     <>
       <div className="sub" style={{ marginBottom: 6 }}>
-        baseline trace colored by Δlogprob per token —{" "}
+        baseline trace colored by Δlogprob per token -{" "}
         <span style={{ color: "var(--neg)" }}>red</span> = ckpt less confident,{" "}
         <span style={{ color: "var(--accent)" }}>blue</span> = more confident
         {mark != null ? " · amber edge = first divergence" : ""}
         {" · strip = mean Δ per window, click to jump"}
+        {onPick ? " · click any token to set the branch cut" : ""}
       </div>
       <div className="binstrip">
         {bins.map((b, i) => (
           <div
             key={i}
             className={`bin${mark != null && mark >= b.start && mark < b.start + binN ? " binmark" : ""}`}
-            title={`tokens ${b.start}–${Math.min(b.start + binN, tokens.length)}: mean Δ ${b.mean.toFixed(3)} nats`}
+            title={`tokens ${b.start}-${Math.min(b.start + binN, tokens.length)}: mean Δ ${b.mean.toFixed(3)} nats`}
             onClick={() => jump(b.start)}
             style={{
               background: `color-mix(in srgb, ${
@@ -63,6 +85,16 @@ export function Trace({
           />
         ))}
       </div>
+      {hot.length > 0 && (
+        <div className="sub hotchips">
+          hottest windows:
+          {hot.map((b) => (
+            <button key={b.start} className="hotchip" onClick={() => jump(b.start)}>
+              {kfmt(b.start)}–{kfmt(b.start + binN)} · Σ {b.sum.toFixed(0)}
+            </button>
+          ))}
+        </div>
+      )}
       <div ref={wrapRef} className="traceread">
         {tokens.map((t, i) => {
           const a = Math.sqrt(Math.abs(t.d) / max);
@@ -70,13 +102,18 @@ export function Trace({
             <span
               key={i}
               data-tok={i % binN === 0 ? i : undefined}
-              className={i === mark ? "divmark" : undefined}
+              className={
+                `${i === mark ? "divmark" : ""}${i === cut ? " cutmark" : ""}${
+                  CTL.test(t.t) ? " ctl" : ""
+                }${onPick ? " pickable" : ""}` || undefined
+              }
               style={{
                 background: `color-mix(in srgb, ${
                   t.d < 0 ? "var(--neg)" : "var(--accent)"
                 } ${(a * 80).toFixed(0)}%, transparent)`,
               }}
-              title={`token ${i}: Δ ${t.d.toFixed(3)} nats`}
+              title={`token ${i}: Δ ${t.d.toFixed(3)} nats${onPick ? " - click to cut here" : ""}`}
+              onClick={onPick ? () => onPick(i) : undefined}
             >
               {t.t}
             </span>
@@ -95,6 +132,8 @@ export function TraceView({
   sample,
   delta,
   mark,
+  onPick,
+  cut,
 }: {
   base: string;
   ckpt: string;
@@ -102,6 +141,8 @@ export function TraceView({
   sample: number;
   delta: number[];
   mark: number | null;
+  onPick?: (i: number) => void;
+  cut?: number | null;
 }) {
   const [toks, setToks] = useState<{ t: string; d: number }[] | null>(null);
   const [failed, setFailed] = useState(false);
@@ -116,20 +157,24 @@ export function TraceView({
 
   if (failed) return <Spark delta={delta} mark={mark} w={800} h={72} />;
   if (!toks) return <p className="sub">loading trace…</p>;
-  return <Trace tokens={toks} mark={mark} />;
+  return <Trace tokens={toks} mark={mark} onPick={onPick} cut={cut} />;
 }
 
-/** Delta sparkline: red = ckpt less confident than base, blue = more. */
+/** Delta sparkline: red = ckpt less confident than base, blue = more.
+ *  `n` is the real token count when `delta` arrived downsampled — it scales
+ *  the first-divergence tick. */
 export function Spark({
   delta,
   mark,
   w = 220,
   h = 28,
+  n,
 }: {
   delta: number[];
   mark: number | null;
   w?: number;
   h?: number;
+  n?: number;
 }) {
   if (!delta.length) return null;
   const step = Math.max(1, Math.floor(delta.length / w));
@@ -155,8 +200,8 @@ export function Spark({
       })}
       {mark != null && (
         <line
-          x1={(mark / delta.length) * w}
-          x2={(mark / delta.length) * w}
+          x1={(mark / (n ?? delta.length)) * w}
+          x2={(mark / (n ?? delta.length)) * w}
           y1={0}
           y2={h}
           style={{ stroke: "var(--warn)" }}
@@ -167,7 +212,7 @@ export function Spark({
   );
 }
 
-/** "What would the ckpt do instead?" — greedy ckpt sample from a cut on the
+/** "What would the ckpt do instead?" - greedy ckpt sample from a cut on the
  *  base's trace. The only paid interaction in the UI (~96 tokens/click). */
 export function BranchView({
   base,
@@ -223,7 +268,7 @@ export function BranchView({
         <button className="theme-btn" onClick={run} disabled={busy}>
           {busy ? "sampling…" : "branch ckpt here"}
         </button>
-        <span className="sub">greedy ckpt continuation, ~96 tokens — a paid call</span>
+        <span className="sub">greedy ckpt continuation, ~96 tokens - a paid call</span>
         {err && <span className="err">{err}</span>}
       </div>
       {res && (

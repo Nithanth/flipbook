@@ -26,6 +26,15 @@ export interface Manifest {
   [k: string]: unknown;
 }
 
+export interface DivergencePair {
+  base: string;
+  ckpt: string;
+  self: boolean;
+  median_nats: number;
+  max_abs_nats: number;
+  noise_floor: number | null;
+}
+
 export interface Flip {
   row_id: string;
   p_a: number;
@@ -119,7 +128,7 @@ export interface RowSample {
   verdict: number | null;
   extracted: string | null;
   failure_kind: string | null;
-  // what the grader reported — the "why" for custom graders and judges
+  // what the grader reported - the "why" for custom graders and judges
   grade_note?: string | null;
   // decoded generation before the final message; null when token_ids are absent
   thinking?: string | null;
@@ -161,11 +170,11 @@ async function get<T>(path: string): Promise<T> {
     }
     throw new Error(`${r.status} ${detail}`);
   }
-  // a non-JSON 200 means the SPA fallback answered — the running server
+  // a non-JSON 200 means the SPA fallback answered - the running server
   // predates this endpoint
   if (!r.headers.get("content-type")?.includes("application/json")) {
     throw new Error(
-      `${path}: the server returned HTML, not JSON — it's probably running an older build; restart \`flipbook serve\``,
+      `${path}: the server returned HTML, not JSON - it's probably running an older build; restart \`flipbook serve\``,
     );
   }
   return r.json();
@@ -182,7 +191,7 @@ export const api = {
     ),
   divergence: (base: string, ckpt: string) =>
     get<DivergenceRow[]>(`/api/divergence?base=${base}&ckpt=${ckpt}`),
-  divergencePairs: () => get<{ base: string; ckpt: string }[]>("/api/divergence/pairs"),
+  divergencePairs: () => get<DivergencePair[]>("/api/divergence/pairs"),
   divergenceTrace: (base: string, ckpt: string, row: string, sample: number) =>
     get<{ tokens: { t: string; d: number }[] }>(
       `/api/divergence/trace?base=${base}&ckpt=${ckpt}&row=${encodeURIComponent(row)}&sample=${sample}`,

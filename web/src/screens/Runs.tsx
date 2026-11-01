@@ -9,10 +9,14 @@ export default function Runs() {
   const [mNames, setMNames] = useState<Record<string, string>>({});
   const [sel, setSel] = useState<string[]>([]);
   useEffect(() => {
-    api.runs().then(setRuns).catch((e) => setErr(String(e)));
+    const load = () => api.runs().then(setRuns).catch((e) => setErr(String(e)));
+    load();
+    // poll while open - evals landing mid-training show up without a reload
+    const t = setInterval(load, 10000);
     api.manifests().then((ms) =>
       setMNames(Object.fromEntries(ms.map((m) => [m.manifest_hash, m.name]))),
     );
+    return () => clearInterval(t);
   }, []);
 
   if (err) return <p className="err">{err}</p>;
@@ -34,19 +38,19 @@ export default function Runs() {
 
   return (
     <>
-      <h1>runs</h1>
+      <h1>evals</h1>
       <p className="page-sub">
-        every evaluation in the store, grouped by study
+        every model artifact evaluated on a manifest, grouped by study
         {sel.length === 2 &&
           (comparable ? (
             <>
-              {" — "}
+              {" - "}
               <a href={`#/compare?a=${sel[0]}&b=${sel[1]}`}>compare the selected pair →</a>
             </>
           ) : (
-            " — selected runs were graded on different manifests; they can't be paired"
+            " - selected runs were graded on different manifests; they can't be paired"
           ))}
-        {sel.length === 1 && " — select one more run on the same eval to compare"}
+        {sel.length === 1 && " - select one more run on the same eval to compare"}
       </p>
       {studies.map((s) => (
         <section key={s}>
@@ -88,7 +92,7 @@ export default function Runs() {
                     </td>
                     <td>{runLabel(r)}</td>
                     <td className="mono">
-                      {r.acc != null ? (r.acc as number).toFixed(2) : "—"}
+                      {r.acc != null ? `${((r.acc as number) * 100).toFixed(0)}%` : "-"}
                     </td>
                     <td className="mono" title={r.model_id as string | undefined}>
                       {shortModel((r.model_id ?? r.model) as string | undefined)}
@@ -102,7 +106,9 @@ export default function Runs() {
                     <td className="sub">
                       {(r.created_at as string | undefined)?.slice(0, 10) ?? ""}
                     </td>
-                    <td className="mono sub">{r.run_id.slice(0, 12)}</td>
+                    <td className="mono sub" title={trainTip(r)}>
+                      {r.run_id.slice(0, 12)}
+                    </td>
                   </tr>
                 ))}
             </tbody>
@@ -111,6 +117,22 @@ export default function Runs() {
       ))}
     </>
   );
+}
+
+/** Hover text for the run id: the training knobs that produced this checkpoint. */
+function trainTip(r: Run): string | undefined {
+  const prov = r.provenance as Record<string, unknown> | undefined;
+  if (!prov) return r.run_id;
+  const tc = prov.train_config as Record<string, unknown> | undefined;
+  const step = prov.train_step_measured;
+  const parts = tc
+    ? Object.entries(tc)
+        .filter(([, v]) => v != null)
+        .map(([k, v]) => `${k}=${v}`)
+    : Object.entries(prov)
+        .filter(([k]) => k !== "train_step_measured")
+        .map(([k, v]) => `${k}=${String(v).slice(-30)}`);
+  return `${r.run_id}\n${step != null ? `step ${step} · ` : ""}${parts.join(" · ")}`;
 }
 
 export function shortModel(m?: string): string {

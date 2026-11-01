@@ -3,8 +3,12 @@ from flipbook.store import Store
 
 
 def test_divergence_pos_crosses_tau():
-    # cumsum hits -5 at index 2, recovers — first crossing wins
-    assert _pos([0.0, -2.0, -3.5, 9.0], 5.0) == 2
+    # net shift is material AND crosses early: first crossing wins
+    assert _pos([0.0, -2.0, -3.5, -1.0], 5.0) == 2
+    # dips below -tau but recovers to positive: transient, not diverged
+    assert _pos([0.0, -2.0, -3.5, 9.0], 5.0) is None
+    # A/A noise pattern: random walk crosses -5 late, ends at -4.6 (not diverged)
+    assert _pos([0.0] * 100 + [-4.0, -2.0, +1.4], 5.0) is None
     assert _pos([0.0, -1.0, -1.0], 5.0) is None
 
 
