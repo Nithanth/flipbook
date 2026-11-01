@@ -201,6 +201,94 @@ async def diverge_async(
     )
 
 
+async def branch(
+    store: Store,
+    base_run_id: str,
+    ckpt_run_id: str,
+    row_id: str,
+    sample_idx: int,
+    pos: int,
+    n: int = 96,
+) -> dict:
+    """Counterfactual continuation: greedy ckpt sample from a cut on the base trace.
+
+    The per-token delta says *where* the ckpt disagrees but never *what it would
+    do instead* — this answers the second question. Uses the same prefix
+    convention as diverge_async (base-effort prompt ++ base's own tokens[:pos])
+    so the ckpt continuation is conditioned on the reasoning it was scored
+    against. pos indexes continuation tokens.
+    """
+    import tinker
+    from tinker.types import ModelInput, SamplingParams
+    from tinker_cookbook.renderers import get_renderer
+    from tinker_cookbook.tokenizer_utils import get_tokenizer
+
+    from flipbook.decode import strip_control_tokens
+
+    base = _run_rec(store, base_run_id)
+    ckpt = _run_rec(store, ckpt_run_id)
+    key = (row_id, int(sample_idx))
+    drow = next(
+        (
+            r
+            for r in store.divergence(base["run_id"], ckpt["run_id"]).to_pylist()
+            if (r["row_id"], r["sample_idx"]) == key
+        ),
+        None,
+    )
+    srow = next(
+        (
+            r
+            for r in store.samples(base["run_id"]).to_pylist()
+            if (r["row_id"], r["sample_idx"]) == key
+        ),
+        None,
+    )
+    mrow = next(
+        (r for r in store.manifest_rows(base["manifest_hash"]) if r["row_id"] == row_id),
+        None,
+    )
+    if drow is None or srow is None or not srow.get("token_ids") or mrow is None:
+        raise LookupError(f"no divergence/sample data for {row_id}:{sample_idx}")
+    ids = [int(i) for i in srow["token_ids"]]
+    pos = max(0, min(int(pos), len(ids) - 1))
+    n = max(1, min(int(n), 256))
+
+    tok = get_tokenizer(base["model_id"])
+    renderer = get_renderer(base["renderer"], tok)
+    prompt = _prompt_ints(renderer, base["renderer"], mrow["messages"], base["effort"])
+
+    sc = tinker.ServiceClient()
+    client = (
+        sc.create_sampling_client(model_path=ckpt["checkpoint_path"])
+        if ckpt["checkpoint_path"]
+        else sc.create_sampling_client(base_model=ckpt["model_id"])
+    )
+    resp = await client.sample_async(
+        ModelInput.from_ints(prompt + ids[:pos]),
+        num_samples=1,
+        sampling_params=SamplingParams(
+            max_tokens=n,
+            temperature=0.0,
+            stop=renderer.get_stop_sequences(),
+            seed=0,
+        ),
+    )
+    seq = resp.sequences[0]
+    ckpt_ids = list(seq.tokens)
+    ckpt_lps = list(seq.logprobs) if seq.logprobs else []
+    return {
+        "pos": pos,
+        "base_tok": tok.decode([ids[pos]]),
+        "base_tok_lp": float(drow["lp_base"][pos]),
+        "ckpt_lp_on_base_tok": float(drow["lp_ckpt"][pos]),
+        "ckpt_first_tok": tok.decode([ckpt_ids[0]]) if ckpt_ids else "",
+        "ckpt_first_tok_lp": float(ckpt_lps[0]) if ckpt_lps else None,
+        "base_cont": strip_control_tokens(tok.decode(ids[pos : pos + n])),
+        "ckpt_cont": strip_control_tokens(tok.decode(ckpt_ids)),
+    }
+
+
 def diverge(
     store: Store,
     base_run_id: str,

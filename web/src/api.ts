@@ -89,6 +89,19 @@ export interface DivergenceRow {
   p_skip_base: number;
   p_skip_ckpt: number;
   cost_usd: number;
+  // truncated question text (newer servers)
+  q?: string | null;
+}
+
+export interface BranchResult {
+  pos: number;
+  base_tok: string;
+  base_tok_lp: number;
+  ckpt_lp_on_base_tok: number;
+  ckpt_first_tok: string;
+  ckpt_first_tok_lp: number | null;
+  base_cont: string;
+  ckpt_cont: string;
 }
 
 export interface MetricRow {
@@ -173,6 +186,10 @@ export const api = {
   divergenceTrace: (base: string, ckpt: string, row: string, sample: number) =>
     get<{ tokens: { t: string; d: number }[] }>(
       `/api/divergence/trace?base=${base}&ckpt=${ckpt}&row=${encodeURIComponent(row)}&sample=${sample}`,
+    ),
+  divergenceBranch: (base: string, ckpt: string, row: string, sample: number, pos: number) =>
+    get<BranchResult>(
+      `/api/divergence/branch?base=${base}&ckpt=${ckpt}&row=${encodeURIComponent(row)}&sample=${sample}&pos=${pos}`,
     ),
   studies: () => get<string[]>("/api/studies"),
   study: (name: string) => get<StudyDetail>(`/api/studies/${name}`),

@@ -149,7 +149,36 @@ def create_app(store_path: str | Path) -> FastAPI:
         f = store.path / "divergence" / f"{base}__{ckpt}.parquet"
         if not f.exists():
             raise HTTPException(404, f"no divergence for {base} vs {ckpt}")
-        return _rows(store.divergence(base, ckpt))
+        from flipbook.manifest import question_text
+
+        run = next((r for r in store.runs() if r["run_id"] == base), {})
+        qtext = {
+            r["row_id"]: question_text(r["messages"]).replace("\n", " ")[:120]
+            for r in store.manifest_rows(run.get("manifest_hash") or "")
+        }
+        return [{**r, "q": qtext.get(r["row_id"])} for r in _rows(store.divergence(base, ckpt))]
+
+    @app.get("/api/divergence/branch")
+    async def divergence_branch(
+        base: str = Query(...),
+        ckpt: str = Query(...),
+        row: str = Query(...),
+        sample: int = Query(...),
+        pos: int = Query(...),
+        n: int = Query(96),
+    ) -> dict:
+        # greedy ckpt continuation from a cut on the base's own trace — the one
+        # paid endpoint; ~n sampled tokens per call
+        from flipbook.diverge import branch
+
+        try:
+            return await branch(store, base, ckpt, row, sample, pos, n)
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(502, f"branch sampling failed: {type(e).__name__}: {e}") from e
 
     @app.get("/api/divergence/trace")
     def divergence_trace(
