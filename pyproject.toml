@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tinker-flipbook"
+version = "0.1.0"
+description = "Trajectory-level regression analysis for Tinker fine-tuning"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    "tinker==0.30.3",
+    "tinker-cookbook==0.5.7",
+    "tml-renderers==0.1.0",
+    "torch==2.14.0",
+    "pydantic>=2,<3",
+    "sympy==1.14.0",
+    "pylatexenc==2.11",
+    "math-verify==0.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "ruff==0.16.8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
