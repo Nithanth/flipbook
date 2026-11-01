@@ -10,7 +10,6 @@ cents on Inkling-Small.
     python scripts/verify_instrument.py [--offline] [--ckpt tinker://...]
 """
 
-from __future__ import annotations
 
 import argparse
 import asyncio

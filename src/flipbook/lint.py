@@ -5,7 +5,6 @@ when the caller only has a `tinker://` path and can't resolve it, Inkling
 checks degrade gracefully instead of lying.
 """
 
-from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
