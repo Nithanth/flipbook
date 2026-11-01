@@ -3,11 +3,9 @@
 Regression analysis for [Tinker](https://thinkingmachines.ai/tinker/) fine-tuning runs.
 You freeze an eval set, sample each checkpoint against it, and flipbook tells
 you which examples got better, which got worse, what it cost, and where in the
-output the model's behavior changed.
-
-It exists because train loss only measures the training task. A checkpoint can
-improve on its objective every step while breaking on everything else, and
-nothing in the loop will tell you. Per-example evals during training will.
+output the model's behavior changed. A checkpoint can improve on its objective every 
+step while breaking on everything else, and nothing in the loop will tell you. Per-example 
+evals can diagnose this in flight.
 
 ## Try it without a key
 
