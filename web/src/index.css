@@ -32,6 +32,8 @@
 }
 
 * { box-sizing: border-box; }
+/* hidden .tip::after tooltips would otherwise inflate the scroll width */
+html, body { overflow-x: clip; }
 body {
   margin: 0;
   background: var(--bg);
@@ -142,6 +144,7 @@ tr.gain td { color: var(--pos); }
   border: 1px solid var(--border);
   border-radius: 10px;
   max-width: 100%;
+  height: auto;
 }
 
 .hero { margin: 16px 0 8px; }
@@ -396,6 +399,11 @@ h2 a.sub:hover { color: var(--accent); }
 @media (max-width: 640px) {
   .cards { grid-template-columns: 1fr 1fr; }
   .chart, .spark { max-width: 100%; }
+  nav { flex-wrap: wrap; }
+  /* grid items default to min-width:auto - let strip cards shrink to the track */
+  .mini { min-width: 0; }
+  /* block + overflow lets a too-wide table scroll instead of pushing the page */
+  table { display: block; overflow-x: auto; }
 }
 
 /* markdown inside question/sample panels */

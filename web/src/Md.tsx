@@ -10,8 +10,11 @@ import rehypeKatex from "rehype-katex";
  * outside math in $...$ - models emit boxed outside math mode constantly.
  */
 
+// Pandoc's rule for single-$ math: the opening $ can't be followed by
+// whitespace and the closing $ can't be followed by a digit - so "$4 each and
+// a $20 bill" is currency, not a math span
 const MATH_SPAN =
-  /(\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$[^$]+?\$)/g;
+  /(\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$(?!\s)[^$]+?\$(?!\d))/g;
 const BOXED = /\\boxed\{(?:[^{}]|\{[^{}]*\})*\}/g;
 
 function normalize(text: string): string {
@@ -28,11 +31,15 @@ function normalize(text: string): string {
     .map((seg, i) =>
       i % 2 === 1
         ? seg
-        : seg.replace(BOXED, (m) =>
-            // an empty \boxed{} is prompt boilerplate ("answer in \boxed{}"),
-            // not math - show the literal syntax instead of an empty frame
-            m === "\\boxed{}" ? "`\\boxed{}`" : `$${m}$`,
-          ),
+        : seg
+            // every $ left in a text segment failed the math rule - escape it
+            // so remark-math can't re-pair it with a later stray $
+            .replace(/\$/g, "\\$")
+            .replace(BOXED, (m) =>
+              // an empty \boxed{} is prompt boilerplate ("answer in \boxed{}"),
+              // not math - show the literal syntax instead of an empty frame
+              m === "\\boxed{}" ? "`\\boxed{}`" : `$${m}$`,
+            ),
     )
     .join("");
 }

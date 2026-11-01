@@ -324,7 +324,6 @@ function Hero({
       <svg
         viewBox={`0 0 ${w} ${h}`}
         width="100%"
-        height="auto"
         preserveAspectRatio="xMidYMid meet"
         className="chart"
         onMouseMove={onMove}
@@ -546,7 +545,9 @@ function Narrative({ d, runs }: { d: Derived; runs: Run[] }) {
     const held = cliff ? evals[Math.max(0, evals.indexOf(cliff) - 1)] : peak;
     const open = realPeak
       ? `pass@1 rose to ${pct(peak.pass1!)} (step ${peak.step})`
-      : `pass@1 held near ${pct(first.pass1!)} through step ${held.step}`;
+      : held.step === first.step
+        ? `pass@1 started at ${pct(first.pass1!)} (step ${first.step})`
+        : `pass@1 held near ${pct(first.pass1!)} through step ${held.step}`;
     bullets.push({
       t:
         `${open}, then fell to ${pct(trough.pass1!)} by step ${trough.step}` +
@@ -712,7 +713,7 @@ function FocusChart({
   // an empty series has no y domain - render the frame, not Infinity axes
   if (pts.length === 0) {
     return (
-      <svg viewBox={`0 0 ${w} ${h}`} width="100%" height="auto" className="chart focus">
+      <svg viewBox={`0 0 ${w} ${h}`} width="100%" className="chart focus">
         <line x1={pad} x2={w - pad} y1={h - pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
         <line x1={pad} x2={pad} y1={pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
         <text x={w / 2} y={h / 2} textAnchor="middle" style={{ fill: "var(--muted)" }} fontSize={11}>
@@ -756,7 +757,6 @@ function FocusChart({
     <svg
       viewBox={`0 0 ${w} ${h}`}
       width="100%"
-      height="auto"
       preserveAspectRatio="xMidYMid meet"
       className="chart focus"
       onMouseMove={onMove}
