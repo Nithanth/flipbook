@@ -735,7 +735,20 @@ function tail(text: string): string {
 }
 
 function clamp(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+  if (s.length <= n) return s;
+  let cut = s.slice(0, n - 1);
+  // never leave an open math delimiter - the tail would render raw LaTeX
+  const nOpen = (str: string, a: string, b: string) =>
+    (str.split(a).length - 1) - (str.split(b).length - 1);
+  const nDollar = (cut.match(/\$/g) ?? []).length;
+  if (nDollar % 2 === 1 || nOpen(cut, "\\(", "\\)") > 0 || nOpen(cut, "\\[", "\\]") > 0) {
+    cut = cut.slice(
+      0,
+      Math.max(cut.lastIndexOf("$"), cut.lastIndexOf("\\("), cut.lastIndexOf("\\["), 0),
+    );
+  }
+  if (/\\[a-zA-Z]*$/.test(cut)) cut = cut.replace(/\\[a-zA-Z]*$/, "");
+  return `${cut.trimEnd()}…`;
 }
 
 function SampleView({ s }: { s: RowSample }) {

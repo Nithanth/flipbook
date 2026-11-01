@@ -338,6 +338,57 @@ def create_app(store_path: str | Path) -> FastAPI:
         if (store.path / "training_metrics" / f"{name}.parquet").exists():
             for r in _rows(store.training_metrics(name)):
                 metrics.setdefault(r["key"], []).append({"step": r["step"], "value": r["value"]})
+        # a checkpoint eval has everything a chart needs in its samples -
+        # synthesize the per-step series when training_metrics hasn't landed
+        # (cookbook flushes metrics.jsonl late, or never for bare evals)
+        base = next((r for r in sruns if r.get("train_step") is None), None)
+        charted = {p["step"] for k, v in metrics.items() if k.endswith("/pass1") for p in v}
+        if base:
+            for r in sruns:
+                st = r.get("train_step")
+                if (st is None or st in charted or r["run_id"] == base["run_id"]
+                        or r.get("state") == "running"):
+                    continue
+                pair = _compare_live(base["run_id"], r["run_id"])
+                if not pair["n_pairs"]:
+                    continue
+                stats = {
+                    "pass1": pair["acc_b"], "delta_vs_base": pair["delta"],
+                    "delta_ci_lo": pair["delta_ci"][0], "delta_ci_hi": pair["delta_ci"][1],
+                    "regressions": float(sum(f["kind"] == "regression" for f in pair["flips"])),
+                    "gains": float(sum(f["kind"] == "gain" for f in pair["flips"])),
+                    "truncation_rate": pair["truncation_rate_b"],
+                    "mean_gen_tokens": pair["tokens"]["b"]["mean"],
+                    "cost_usd": pair["cost_b"],
+                }
+                for k, v in stats.items():
+                    metrics.setdefault(f"eval/{k}", []).append({"step": st, "value": v})
+                for n, pv in (pair.get("passn") or {}).items():
+                    metrics.setdefault(f"eval/pass{n}", []).append({"step": st, "value": pv["b"]})
+                for n, pv in (pair.get("scoren") or {}).items():
+                    metrics.setdefault(f"eval/score{n}", []).append({"step": st, "value": pv["b"]})
+        # divergence backfills live in their own files, not training_metrics
+        divd = store.path / "divergence"
+        if divd.exists():
+            steps = {r["run_id"]: r.get("train_step") for r in sruns}
+            charted_div = {p["step"] for k, v in metrics.items()
+                           if k.endswith("/divergence_mean_nats") for p in v}
+            for f in sorted(divd.glob("*.parquet")):
+                base_id, ckpt_id = f.stem.split("__")
+                st = steps.get(ckpt_id)
+                if st is None or st in charted_div:
+                    continue
+                t = store.divergence(base_id, ckpt_id)
+                if not t.num_rows:
+                    continue
+                nats = [x for x in t.column("sum_nats").to_pylist() if x is not None]
+                skip = [x for x in t.column("p_skip_ckpt").to_pylist() if x is not None]
+                if nats:
+                    metrics.setdefault("eval/divergence_mean_nats", []).append(
+                        {"step": st, "value": sum(nats) / len(nats)})
+                if skip:
+                    metrics.setdefault("eval/p_skip", []).append(
+                        {"step": st, "value": sum(skip) / len(skip)})
         effort = {}
         d = store.path / "effort"
         if d.exists():

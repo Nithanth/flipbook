@@ -11,6 +11,8 @@ export default function Study() {
   );
   const [detail, setDetail] = useState<StudyDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [overlayName, setOverlayName] = useState("");
+  const [overlay, setOverlay] = useState<StudyDetail | null>(null);
 
   useEffect(() => {
     Promise.all([api.studies(), api.runs()]).then(([ss, rs]) => {
@@ -46,7 +48,20 @@ export default function Study() {
     return () => clearInterval(t);
   }, [study]);
 
+  // overlay: same-axis pass@1 of a second study (e.g. two model sizes, one recipe)
+  useEffect(() => {
+    if (!overlayName) {
+      setOverlay(null);
+      return;
+    }
+    api.study(overlayName).then(setOverlay).catch(() => setOverlay(null));
+  }, [overlayName]);
+
   const derived = useMemo(() => (detail ? derive(detail) : null), [detail]);
+  const ghost = useMemo(
+    () => (overlay ? derive(overlay).rows.filter((r) => r.pass1 != null) : []),
+    [overlay],
+  );
   const [focus, setFocus] = useState<string | null>(null);
   const [touched, setTouched] = useState<Date | null>(null);
 
@@ -79,8 +94,20 @@ export default function Study() {
           <span className="sub">
             {detail.runs.length} runs · {nEvals} eval points
             {models.length === 1 ? ` · ${models[0]}` : ""}
+            {detail.runs.some((r) => r.state === "running") ? " · sampling…" : ""}
             {touched ? ` · live · updated ${touched.toLocaleTimeString()}` : ""}
           </span>
+        )}
+        {detail && detail.runs.length > 1 && studies.length > 1 && (
+          <label>
+            overlay{" "}
+            <select value={overlayName} onChange={(e) => setOverlayName(e.target.value)}>
+              <option value="">none</option>
+              {studies.filter((s) => s !== study).map((s) => (
+                <option key={s}>{s}</option>
+              ))}
+            </select>
+          </label>
         )}
       </div>
       {err && <p className="err">{err}</p>}
@@ -96,7 +123,7 @@ export default function Study() {
       )}
       {detail && derived && derived.rows.length > 0 && (
         <>
-          <Hero d={derived} go={go} />
+          <Hero d={derived} go={go} ghost={ghost} ghostName={overlayName} />
           <Narrative d={derived} runs={detail.runs} />
           <MetricStrip d={derived} focus={focus} onFocus={setFocus} go={go} />
           <StepTable d={derived} runs={detail.runs} />
@@ -217,8 +244,20 @@ function derive(detail: StudyDetail): Derived {
   return { rows, metricKeys: Object.keys(m), lossKey, lossSeries, epochStarts };
 }
 
-/** pass1 (left axis) vs train loss (right axis) - the collision chart. */
-function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
+/** pass1 (left axis) vs train loss (right axis) - the collision chart.
+ *  `ghost` overlays another study's pass@1 on the same axis - the "did the
+ *  same recipe break two models the same way" view. */
+function Hero({
+  d,
+  go,
+  ghost = [],
+  ghostName = "",
+}: {
+  d: Derived;
+  go: (step: number) => void;
+  ghost?: StepRow[];
+  ghostName?: string;
+}) {
   const [hover, setHover] = useState<number | null>(null);
   const pts = d.rows.filter((r) => r.pass1 != null);
   const lossMax = Math.max(1e-9, ...d.lossSeries.map((s) => s.value));
@@ -227,7 +266,11 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
   const w = 860;
   const h = 280;
   const pad = 44;
-  const allSteps = [...pts.map((r) => r.step), ...d.lossSeries.map((s) => s.step)];
+  const allSteps = [
+    ...pts.map((r) => r.step),
+    ...d.lossSeries.map((s) => s.step),
+    ...ghost.map((r) => r.step),
+  ];
   const x0 = Math.min(...allSteps);
   const x1 = Math.max(...allSteps);
   const sx = (x: number) => pad + ((x - x0) / Math.max(1, x1 - x0)) * (w - 2 * pad);
@@ -239,6 +282,9 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
   const syLoss = (y: number) => h - pad - (y / lossMax) * (h - 2 * pad);
 
   const passPath = pts.map((r, i) => `${i ? "L" : "M"}${sx(r.step)},${syPass(r.pass1!)}`).join(" ");
+  const ghostPath = ghost
+    .map((r, i) => `${i ? "L" : "M"}${sx(r.step)},${syPass(r.pass1!)}`)
+    .join(" ");
   const lossPath = d.lossSeries
     .map((r, i) => `${i ? "L" : "M"}${sx(r.step)},${syLoss(r.value)}`)
     .join(" ");
@@ -314,6 +360,24 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
         {lossPath && (
           <path d={lossPath} fill="none" style={{ stroke: "var(--accent2)" }} strokeWidth={1.4} strokeDasharray="4 3" />
         )}
+        {ghostPath && (
+          <>
+            <path
+              d={ghostPath}
+              fill="none"
+              style={{ stroke: "var(--warn)" }}
+              strokeWidth={1.6}
+              strokeDasharray="6 4"
+              strokeLinejoin="round"
+            />
+            {ghost.map((r) => (
+              <circle key={`g${r.step}`} cx={sx(r.step)} cy={syPass(r.pass1!)} r={3.5}
+                fill="none" style={{ stroke: "var(--warn)" }} strokeWidth={1.4}>
+                <title>{`${ghostName}: step ${r.step} pass1 ${(r.pass1! * 100).toFixed(1)}%`}</title>
+              </circle>
+            ))}
+          </>
+        )}
         <path d={passPath} fill="none" style={{ stroke: "var(--accent)" }} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
         {pts.map((r) => (
           <circle
@@ -374,16 +438,25 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
         )}
         <text x={6} y={pad} style={{ fill: "var(--accent)" }} fontSize={11}>100%</text>
         <text x={6} y={h - pad} style={{ fill: "var(--accent)" }} fontSize={11}>0%</text>
-        <text x={w - pad + 6} y={pad} style={{ fill: "var(--accent2)" }} fontSize={11}>{lossMax.toPrecision(2)}</text>
+        {d.lossSeries.length > 0 && (
+          <>
+            <text x={w - pad + 6} y={pad} style={{ fill: "var(--accent2)" }} fontSize={11}>{lossMax.toPrecision(2)}</text>
+            <text x={w - pad + 6} y={h - pad} style={{ fill: "var(--accent2)" }} fontSize={11}>0</text>
+          </>
+        )}
         <text x={w / 2} y={h - 4} textAnchor="middle" style={{ fill: "var(--muted)" }} fontSize={11}>
           optimizer step →
         </text>
-        <text x={w - pad + 6} y={h - pad} style={{ fill: "var(--accent2)" }} fontSize={11}>0</text>
       </svg>
       <div className="legend">
         <Tip text="Fraction of frozen eval questions answered correctly at this checkpoint (left axis). Click a point to compare that step against baseline.">
           <span style={{ color: "var(--accent)" }}>━ pass@1 (click a point)</span>
         </Tip>
+        {ghost.length > 0 && (
+          <Tip text={`pass@1 of study '${ghostName}' overlaid on the same step axis - same recipe, different run.`}>
+            <span style={{ color: "var(--warn)" }}>┅ {ghostName}</span>
+          </Tip>
+        )}
         {d.lossKey && (
           <Tip text={`${d.lossKey}: training loss on the fine-tuning batches - what the optimizer sees (right axis). Logged every optimizer step (one batch); evals run every ${evalGap ?? "?"} steps. It can keep falling while eval behavior collapses; that's the collision this chart exists to show.`}>
             <span style={{ color: "var(--accent2)" }}>┅ {d.lossKey}</span>
@@ -560,11 +633,11 @@ function MetricStrip({
 }) {
   const cards: [string, string, (r: StepRow) => number | undefined, (v: number) => string][] = [
     ["pass@k", "fraction of questions where at least one of the k samples was correct - the headroom above pass@1", (r) => r.passK, (v) => `${(v * 100).toFixed(1)}%`],
-    ["divergence (nats)", "How far the checkpoint's token probabilities moved from base on the baseline's own reasoning traces. ~0 = unchanged policy; very negative = the internals shifted hard - often before accuracy shows it.", (r) => r.div, (v) => v.toFixed(0)],
-    ["mean gen tokens", "Average response length. A sudden drop or spike means the model changed how it answers (rambling into the cap, or collapsing to short format-locked answers).", (r) => r.genTok, (v) => v.toFixed(0)],
+    ["divergence (nats)", "How far the checkpoint's token probabilities moved from base on the baseline's own reasoning traces. ~0 = unchanged policy; very negative = the internals shifted hard - often before accuracy shows it.", (r) => r.div, (v) => v.toLocaleString("en-US", { maximumFractionDigits: 0 })],
+    ["mean gen tokens", "Average response length. A sudden drop or spike means the model changed how it answers (rambling into the cap, or collapsing to short format-locked answers).", (r) => r.genTok, (v) => v.toLocaleString("en-US", { maximumFractionDigits: 0 })],
     ["truncation", "Fraction of samples that hit the max-token cap before finishing. High truncation = the model rambles and never emits a final answer.", (r) => r.trunc, (v) => `${(v * 100).toFixed(0)}%`],
-    ["effort gap (nats)", "Log-prob difference between effort=0.9 and effort=0.2 prompts on the same trace. Large = effort conditioning still modulates the model; ~0 = the dial is dead.", (r) => r.effortGap, (v) => v.toFixed(0)],
-    ["skip prob", "The model's own probability of ending the response immediately (end-of-message as the first token). Rising = it increasingly wants to emit nothing.", (r) => r.pSkip, (v) => v.toPrecision(2)],
+    ["effort gap (nats)", "Log-prob difference between effort=0.9 and effort=0.2 prompts on the same trace. Large = effort conditioning still modulates the model; ~0 = the dial is dead.", (r) => r.effortGap, (v) => v.toLocaleString("en-US", { maximumFractionDigits: 0 })],
+    ["skip prob", "The model's own probability of ending the response immediately (end-of-message as the first token). Rising = it increasingly wants to emit nothing.", (r) => r.pSkip, (v) => `${(v * 100).toFixed(1)}%`],
     ["eval cost", "Sampling cost of this eval point, in USD.", (r) => r.cost, (v) => `$${v.toFixed(2)}`],
   ];
   const sel = cards.find(([label]) => label === focus);
@@ -636,6 +709,21 @@ function FocusChart({
   // share the hero's x range so a metric that stops early (divergence not
   // computed at the last step) shows as a gap, not a stretched line
   const [x0, x1] = xDomain;
+  // an empty series has no y domain - render the frame, not Infinity axes
+  if (pts.length === 0) {
+    return (
+      <svg viewBox={`0 0 ${w} ${h}`} width="100%" height="auto" className="chart focus">
+        <line x1={pad} x2={w - pad} y1={h - pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
+        <line x1={pad} x2={pad} y1={pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
+        <text x={w / 2} y={h / 2} textAnchor="middle" style={{ fill: "var(--muted)" }} fontSize={11}>
+          no {label} computed yet
+        </text>
+        <text x={w - pad} y={16} textAnchor="end" style={{ fill: "var(--muted)" }} fontSize={11}>
+          {label}{ghostLabel ? `  ·  ┅ ${ghostLabel}` : ""}
+        </text>
+      </svg>
+    );
+  }
   const [y0, y1] = [Math.min(...pts.map((p) => p.y)), Math.max(...pts.map((p) => p.y))];
   const span = Math.max(1e-9, y1 - y0);
   const sx = (x: number) => pad + ((x - x0) / Math.max(1, x1 - x0)) * (w - 2 * pad);
@@ -830,6 +918,16 @@ function StepTable({ d, runs }: { d: Derived; runs: Run[] }) {
               </tr>
             );
           })}
+          {runs
+            .filter((r) => r.state === "running" && r.train_step != null)
+            .map((r) => (
+              <tr key={r.run_id}>
+                <td>step {r.train_step}</td>
+                <td colSpan={8} className="sub">
+                  sampling… this eval is still running; the page refreshes every 8s
+                </td>
+              </tr>
+            ))}
         </tbody>
       </table>
       <p className="sub" style={{ marginTop: 6 }}>- = not computed for this step (divergence and effort run on demand).</p>

@@ -110,6 +110,30 @@ def test_pass_at_n_uses_smaller_k(tmp_path):
     assert p.passn["2"]["b"] == pytest.approx(0.25)
 
 
+def test_score_at_n_for_graded_verdicts(tmp_path):
+    store = Store(tmp_path)
+    _run(store, "a", {0: [0.9, 0.1, 0.8, 0.2]}, k=4)
+    _run(store, "b", {0: [0.5, 0.5, 0.5, 0.5]}, k=4)
+    p = compare(store, "a", "b")
+    # pass@n still runs (and warns): int(sum) treats 0.5s as fractional
+    # "correct" counts, so neither run shows the truth - score@n does
+    assert any("non-binary" in w for w in p.comparability["warnings"])
+    # a: sorted [0.9,0.8,0.2,0.1]; E[max of 2] = (0.9*C(3,1)+0.8*C(2,1)+0.2*C(1,1))/C(4,2)
+    assert p.scoren["2"]["a"] == pytest.approx((0.9 * 3 + 0.8 * 2 + 0.2 * 1) / math.comb(4, 2))
+    assert p.scoren["2"]["b"] == pytest.approx(0.5)
+    assert p.scoren["2"]["delta"] == pytest.approx(0.5 - 0.75)
+
+
+def test_score_at_n_absent_for_binary_verdicts(tmp_path):
+    store = Store(tmp_path)
+    _run(store, "a", {0: [1, 1, 0, 0]}, k=4)
+    _run(store, "b", {0: [1, 0, 0, 0]}, k=4)
+    p = compare(store, "a", "b")
+    # binary verdicts: score@n would equal pass@n exactly - don't emit noise
+    assert p.scoren == {}
+    assert not any("non-binary" in w for w in p.comparability["warnings"])
+
+
 def test_taxonomy_and_token_stats(tmp_path):
     store = Store(tmp_path)
     _run(store, "a", {0: [1], 1: [0]}, gen=200)

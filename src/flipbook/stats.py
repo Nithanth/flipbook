@@ -39,6 +39,8 @@ class PairReport:
     failures: dict  # per-run failure_kind counts over non-correct samples
     # {n: {a, b, delta, delta_ci}} for n in 2..min(k_a, k_b); {} when k<2
     passn: dict = field(default_factory=dict)
+    # graded best-of-n, emitted only when verdicts are non-binary
+    scoren: dict = field(default_factory=dict)
     # per-row cells for the manifest grid: {row_id, p_a, p_b, cell}, sorted
     cells: list[dict] = field(default_factory=list)
     # failure_kind -> sorted row_ids of run-b samples carrying that kind
@@ -123,6 +125,7 @@ def _per_row(samples: list[dict], k: int) -> tuple[dict[str, dict], dict[str, st
             "p": sum(s["verdict"] for s in ok) / len(ok),
             "c": sum(s["verdict"] for s in ok),
             "n": len(ok),
+            "v": [s["verdict"] for s in ok],
             "gen": [s["gen_tokens"] or 0 for s in ok],
             "trunc": sum(s["stop_reason"] == "length" for s in ok) / len(ok),
         }
@@ -144,6 +147,23 @@ def _pass_at(rows: dict[str, dict], n: int) -> np.ndarray:
     return np.array(vals, dtype=float)
 
 
+def _score_at(rows: dict[str, dict], n: int) -> np.ndarray:
+    """Graded best-of-n: E[max verdict over n samples drawn without
+    replacement]. Generalizes pass@n - identical when verdicts are binary."""
+    vals = []
+    for r in rows.values():
+        v = sorted(r["v"], reverse=True)
+        N = len(v)
+        if N < n:
+            continue
+        # the n-subset's max is v[i] iff it contains v[i] and n-1 worse items
+        total = math.comb(N, n)
+        vals.append(
+            sum(v[i] * math.comb(N - i - 1, n - 1) for i in range(N)) / total
+        )
+    return np.array(vals, dtype=float)
+
+
 def _tok_stats(samples: list[dict]) -> dict:
     g = np.array([s["gen_tokens"] for s in samples if s["gen_tokens"] is not None], dtype=float)
     return {
@@ -157,6 +177,11 @@ def compare(store: Store, run_a: str, run_b: str) -> PairReport:
     sb = store.samples(run_b).to_pylist()
     runs = {r["run_id"]: r for r in store.runs()}
     compat = comparability(runs[run_a], runs[run_b]) if run_a in runs and run_b in runs else {}
+    for rr in (run_a, run_b):
+        if runs.get(rr, {}).get("state") == "running":
+            compat.setdefault("warnings", []).append(
+                f"{rr[:12]} is still sampling - numbers here are partial"
+            )
     ka = runs.get(run_a, {}).get("k") or max((s["sample_idx"] for s in sa), default=-1) + 1
     kb = runs.get(run_b, {}).get("k") or max((s["sample_idx"] for s in sb), default=-1) + 1
 
@@ -223,6 +248,30 @@ def compare(store: Store, run_a: str, run_b: str) -> PairReport:
             "delta": float(d_n.mean()), "delta_ci": _boot_ci(d_n),
         }
 
+    # score@n only adds information when verdicts aren't binary - for binary
+    # graders it equals pass@n exactly (max over a subset = any correct)
+    non_binary = any(
+        v not in (0.0, 1.0)
+        for rows in (pa_c, pb_c)
+        for r in rows.values()
+        for v in r["v"]
+    )
+    scoren: dict[str, dict] = {}
+    if non_binary:
+        compat.setdefault("warnings", []).append(
+            "non-binary verdicts: pass@n counts only verdict==1.0; "
+            "score@n is the graded best-of-n"
+        )
+        for n in range(2, min(ka, kb) + 1):
+            a_n, b_n = _score_at(pa_c, n), _score_at(pb_c, n)
+            if not len(a_n) or not len(b_n):
+                continue
+            d_n = b_n - a_n
+            scoren[str(n)] = {
+                "a": float(a_n.mean()), "b": float(b_n.mean()),
+                "delta": float(d_n.mean()), "delta_ci": _boot_ci(d_n),
+            }
+
     cells = [
         {
             "row_id": r, "p_a": float(x), "p_b": float(y),
@@ -270,6 +319,7 @@ def compare(store: Store, run_a: str, run_b: str) -> PairReport:
         cost_b=sum(s["est_cost_usd"] or 0 for s in sb),
         failures=fails,
         passn=passn,
+        scoren=scoren,
         cells=cells,
         failure_rows_b={k: sorted(v) for k, v in fail_rows_b.items()},
         comparability=compat,

@@ -8,6 +8,7 @@ store.
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -148,14 +149,34 @@ class RegressionEvaluator(SamplingClientEvaluator):
                 tok_lo = compare(self.store, baseline_rid, run_ids[e_lo]).tokens["b"]["mean"]
                 if tok_lo:
                     metrics[f"{name}/effort_len_ratio"] = pair.tokens["b"]["mean"] / tok_lo
+        # eval metrics belong in the store the moment they exist - the study
+        # page charts these live; cookbook-side loss/epoch still arrive via
+        # import-metrics
+        if self.study:
+            self.store.put_training_metrics(
+                self.study,
+                [{"study": self.study, "step": step, "key": k, "value": v}
+                 for k, v in metrics.items()],
+            )
         return metrics
     async def _ensure_baseline(self, manifest: Manifest) -> str:
         """Baseline = a stored run_id, or a model name evaluated once lazily —
         after that the store's resume dedupe means it is never re-sampled."""
         if self._baseline_rid:
             return self._baseline_rid
-        for r in self.store.runs():
-            if r["run_id"].startswith(self.baseline):
+        try:
+            self._baseline_rid = self.store.resolve_run(self.baseline)["run_id"]
+            return self._baseline_rid
+        except LookupError:
+            pass
+        # a model name lands here: reuse an existing baseline eval of that
+        # model on this manifest+study before paying for another one
+        for r in self.store.runs(self.study):
+            if (r.get("model_id") == self.baseline
+                    and r.get("manifest_hash") == manifest.manifest_hash
+                    and r.get("label") == "baseline"):
+                log.info("baseline %r is not a run ref - reusing %s (same model+manifest)",
+                         self.baseline, r["run_id"])
                 self._baseline_rid = r["run_id"]
                 return self._baseline_rid
         cfg = RunConfig(
@@ -169,12 +190,27 @@ class RegressionEvaluator(SamplingClientEvaluator):
                              log=lambda m: log.info(m))
         self._baseline_rid = run_id(cfg)
         return self._baseline_rid
+    def _canonical_path(self, model_path: str, step: int) -> str:
+        # ephemeral eval samplers (sampler_weights/ephemeral_N) don't survive
+        # server-side; the durable artifact is the numbered checkpoint. Step 0
+        # pre-dates the first save, so its weights are the base model itself.
+        # Requires eval steps to coincide with save steps (both are multiples
+        # of the same cadence in practice).
+        if "ephemeral_" not in model_path:
+            return model_path
+        if step == 0:
+            return self._resolved.base_model
+        return re.sub(r"/sampler_weights/[^/]+$", f"/sampler_weights/{step:06d}", model_path)
+
     def _patch_provenance(self, rid: str, step: int, model_path: str) -> None:
         """The run record knows its weights path; add the measured train step."""
         f = self.store.path / "runs" / f"{rid}.json"
         rec = json.loads(f.read_text())
+        canon = self._canonical_path(model_path, step)
         rec["provenance"]["train_step_measured"] = step
-        rec["provenance"]["model_path"] = model_path
+        rec["provenance"]["model_path"] = canon
+        rec["checkpoint_path"] = canon
+        rec["train_step"] = step
         if self.train_config:
             rec["provenance"]["train_config"] = self.train_config
         _write_json(rec, f)

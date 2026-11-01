@@ -85,6 +85,12 @@ export default function Divergence() {
         const early = rows.filter((r) => r.divergence_pos != null);
         const collapseDiv =
           early.length >= rows.length * 0.8 && early.every((r) => r.divergence_pos! <= 2);
+        // one y-scale for every sparkline: p95 |delta| over the whole pair, so
+        // bar height compares across rows instead of each row self-normalizing
+        const mag: number[] = [];
+        for (const r of rows) for (const d of r.delta ?? []) mag.push(Math.abs(d));
+        mag.sort((a, b) => a - b);
+        const sparkScale = mag.length ? mag[Math.floor(mag.length * 0.95)] : undefined;
         return (
         <table>
           <thead>
@@ -132,7 +138,7 @@ export default function Divergence() {
                     {r.p_skip_base.toFixed(3)} → {r.p_skip_ckpt.toFixed(3)}
                   </td>
                   <td>
-                    <Spark delta={r.delta} mark={r.divergence_pos} n={r.n ?? undefined} />
+                    <Spark delta={r.delta} mark={r.divergence_pos} n={r.n ?? undefined} scale={sparkScale} />
                   </td>
                 </tr>,
                 isOpen && (

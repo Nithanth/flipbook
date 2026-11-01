@@ -113,13 +113,6 @@ export interface BranchResult {
   ckpt_cont: string;
 }
 
-export interface MetricRow {
-  study: string;
-  step: number;
-  key: string;
-  value: number;
-}
-
 export interface RowSample {
   sample_idx: number;
   text: string;
@@ -144,17 +137,6 @@ export interface RowDetail {
   k_b?: number | null;
   a: RowSample[];
   b: RowSample[];
-}
-
-export interface SampleRow {
-  row_id: string;
-  sample_idx: number;
-  text: string;
-  gen_tokens: number;
-  stop_reason: string;
-  verdict: number | null;
-  failure_kind: string | null;
-  est_cost_usd: number | null;
 }
 
 async function get<T>(path: string): Promise<T> {
@@ -183,7 +165,6 @@ async function get<T>(path: string): Promise<T> {
 export const api = {
   manifests: () => get<Manifest[]>("/api/manifests"),
   runs: () => get<Run[]>("/api/runs"),
-  samples: (run: string) => get<SampleRow[]>(`/api/runs/${run}/samples`),
   compare: (a: string, b: string) => get<PairReport>(`/api/compare?a=${a}&b=${b}`),
   compareRow: (a: string, b: string, row: string) =>
     get<RowDetail>(
@@ -202,5 +183,4 @@ export const api = {
     ),
   studies: () => get<string[]>("/api/studies"),
   study: (name: string) => get<StudyDetail>(`/api/studies/${name}`),
-  metrics: (study: string) => get<MetricRow[]>(`/api/metrics?study=${study}`),
 };

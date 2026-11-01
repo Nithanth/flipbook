@@ -55,10 +55,10 @@ def build_data(out: Path, n: int, seed: int) -> None:
 
 # construct the config for training run 
 def build_config(args):
-    renderer_name = model_info.get_recommended_renderer_name(MODEL)
+    renderer_name = model_info.get_recommended_renderer_name(args.model)
     # knobs on the config
     common = ChatDatasetBuilderCommonConfig(
-        model_name_for_tokenizer=MODEL,
+        model_name_for_tokenizer=args.model,
         renderer_name=renderer_name,
         max_length=args.max_length,
         batch_size=args.batch_size,
@@ -70,7 +70,7 @@ def build_config(args):
     return chz.Blueprint(train.Config).apply(
         {
             "log_path": str(args.log_dir),
-            "model_name": MODEL,
+            "model_name": args.model,
             "recipe_name": "flipbook_demo_sft",
             "renderer_name": renderer_name,
             "dataset_builder": builder,
@@ -86,7 +86,7 @@ def build_config(args):
             "infrequent_evaluator_builders": [
                 lambda: RegressionEvaluator(
                     manifest=args.manifest,
-                    baseline=args.baseline,
+                    baseline=args.baseline or args.model,
                     store=store,
                     log_dir=args.log_dir,
                     eval_every=args.eval_every,
@@ -125,7 +125,7 @@ def count_tokens(config) -> tuple[int, int]:
 def run_train(args) -> int:
     config = build_config(args)
     tokens, steps = count_tokens(config)
-    cost = estimate_usd(MODEL, "train", tokens)
+    cost = estimate_usd(args.model, "train", tokens)
     n_evals = steps // args.eval_every + 1
     print(f"{tokens:,} training tokens over {steps} steps, "
           f"{steps // args.save_every + 1} checkpoints")
@@ -149,8 +149,11 @@ def main() -> int:
     t = sub.add_parser("train")
     t.add_argument("--data", type=Path, default=Path("data/gsm8k_sft.jsonl"))
     t.add_argument("--log-dir", type=Path, default=Path("runs_sft/demo_eval"))
+    t.add_argument("--model", default=MODEL,
+                   help="base model to fine-tune, e.g. thinkingmachines/Inkling")
     t.add_argument("--manifest", required=True)
-    t.add_argument("--baseline", default=MODEL)
+    t.add_argument("--baseline", default=None,
+                   help="run ref for in-loop eval comparison; defaults to --model as a fresh eval")
     t.add_argument("--store", default="flipbook_store")
     t.add_argument("--study", default=None)
     t.add_argument("--batch-size", type=int, default=32)

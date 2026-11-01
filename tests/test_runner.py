@@ -35,6 +35,10 @@ def test_failure_kind_ordering():
     assert _failure_kind(0.0, "x", "length", "x") == "truncation"
     assert _failure_kind(0.0, None, "stop", "I give up") == "parse"
     assert _failure_kind(0.0, "x", "stop", "x") == "wrong_answer"
+    # partial credit is a quality signal, not a mechanism failure - and it
+    # outranks truncation (the grader still scored the truncated text)
+    assert _failure_kind(0.7, "x", "stop", "x") == "partial"
+    assert _failure_kind(0.3, "x", "length", "x") == "partial"
     # extraction graders failing to extract → parse; predicate/judge graders
     # returning extracted=None on a legit failure → failed
     assert _failure_kind(0.0, None, "stop", "I give up", "aime") == "parse"

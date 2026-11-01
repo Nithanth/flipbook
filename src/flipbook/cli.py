@@ -7,9 +7,12 @@ import asyncio
 import functools
 import json
 import os
+import re
 import sys
 import textwrap
 from pathlib import Path
+
+import pyarrow.parquet as pq
 
 from flipbook.budget import budget
 from flipbook.config import RunConfig
@@ -21,6 +24,7 @@ from flipbook.manifest import Manifest, question_text
 from flipbook.runner import LintFailed, evaluate, resolve_model
 from flipbook.stats import compare, gate
 from flipbook.store import Store
+from flipbook.synthetic import MANIFEST_NAME, seed_synthetic
 
 
 def _store(args) -> Store:
@@ -88,23 +92,44 @@ def _complete_row(prefix, parsed_args, **kw):
         return []
 
 
+def _model_names() -> list[str]:
+    """the cookbook's known registry, flattened to org/name - completion and
+    `flipbook models` both read it, so they can never disagree"""
+    from tinker_cookbook import model_info
+
+    orgs = {
+        "meta-llama": model_info.get_llama_info, "Qwen": model_info.get_qwen_info,
+        "deepseek-ai": model_info.get_deepseek_info, "openai": model_info.get_gpt_oss_info,
+        "moonshotai": model_info.get_moonshot_info, "zai-org": model_info.get_zai_info,
+        "nvidia": model_info.get_nvidia_info,
+        "thinkingmachines": model_info.get_thinkingmachines_info,
+    }
+    return [f"{org}/{k}" for org, fn in orgs.items() for k in fn()]
+
+
 def _complete_grader(prefix, parsed_args, **kw):
     from flipbook.graders import GRADERS
     return sorted(GRADERS)
 
 
 def _add_eval_args(p: argparse.ArgumentParser, required: bool = True) -> None:
-    # lint --run reads model/manifest off the stored run record instead
+    # lint --run reads model/manifest off the stored run record instead;
+    # eval accepts a positional ref so both are optional there (a run ref
+    # supplies model + manifest + sampling config on its own)
     p.add_argument("--model", required=required,
-                   help="'thinkingmachines/Inkling-Small', or 'tinker://<run>/sampler_weights/<ckpt>'")
+                   help="'thinkingmachines/Inkling-Small', or 'tinker://<run>/sampler_weights/<ckpt>'; "
+                        "registered names: flipbook models"
+                   ).completer = lambda prefix, **kw: [n for n in _model_names() if n.startswith(prefix)]
     p.add_argument("--manifest", required=required, help="manifest name or hash"
                    ).completer = _complete_manifest
     p.add_argument("--effort", type=float, default=None,
                    help="reasoning effort 0..1 (required by Inkling)")
     p.add_argument("--k", type=int, default=4, help="samples per question")
-    p.add_argument("--temperature", type=float, default=0.7)
-    p.add_argument("--max-tokens", type=int, default=32768)
-    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--temperature", type=float, default=0.7,
+                   help="sampling temperature - keep it identical across a study's runs")
+    p.add_argument("--max-tokens", type=int, default=32768,
+                   help="generation cap; thinking tokens count toward it")
+    p.add_argument("--seed", type=int, default=0, help="sampling seed")
     p.add_argument("--renderer", default=None, help="renderer override, e.g. tml_v0")
     p.add_argument("--base-model", default=None, help="offline override for tinker:// resolution")
     p.add_argument("--label", default=None, help="short name for this run, e.g. 'baseline' or 'step56'")
@@ -113,13 +138,20 @@ def _add_eval_args(p: argparse.ArgumentParser, required: bool = True) -> None:
 
 async def _resolve(args) -> tuple[str, str]:
     """→ (base_model, renderer). Creates a service client only for tinker://."""
+    from tinker_cookbook.exceptions import ConfigurationError
     sc = None
     if args.model.startswith("tinker://") and args.base_model is None:
         import tinker
         sc = tinker.ServiceClient()
-    r = await resolve_model(
-        args.model, renderer=args.renderer, base_model=args.base_model, service_client=sc
-    )
+    try:
+        r = await resolve_model(
+            args.model, renderer=args.renderer, base_model=args.base_model, service_client=sc
+        )
+    except (ConfigurationError, KeyError, ValueError) as e:
+        import difflib
+        near = difflib.get_close_matches(args.model, _model_names(), n=3, cutoff=0.5)
+        hint = f" - did you mean {near[0]}?" if near else " - `flipbook models` lists the registry"
+        raise SystemExit(f"unknown model {args.model!r}{hint}") from e
     return r.base_model, r.renderer
 
 
@@ -146,16 +178,66 @@ def _load_eval_file(path: str) -> dict:
     return cfg
 
 
+def _flagged(argv: list[str], dest: str) -> bool:
+    flag = "--" + dest.replace("_", "-")
+    return any(a == flag or a.startswith(flag + "=") for a in argv)
+
+
 def _merge_eval_config(args, argv: list[str]) -> None:
     """File values are defaults; an explicit --flag always wins."""
     if args.config:
         cfg = _load_eval_file(args.config)
         for k, v in cfg.items():
-            flag = "--" + k.replace("_", "-")
-            if not any(a == flag or a.startswith(flag + "=") for a in argv):
+            if not _flagged(argv, k):
                 setattr(args, k, v)
-    if not args.model or not args.manifest:
-        raise SystemExit("eval needs --model and --manifest (flags or config keys)")
+
+
+def _resolve_eval_ref(args, store: Store, argv: list[str]) -> None:
+    """A positional ref points at weights through the store, not a URI: a run
+    ref reuses that run's checkpoint (or base model) and inherits its config
+    for flags not explicitly set; 'study/stepN' and 'study/final' synthesize
+    the checkpoint path off the study's recorded sampler paths."""
+    if getattr(args, "ref", None) is None:
+        return
+    ref = args.ref
+    rec = None
+    try:
+        rec = store.resolve_run(ref)
+    except LookupError as e:
+        if "ambiguous" in str(e).lower():
+            raise SystemExit(str(e)) from e
+    if rec is None:
+        m = re.fullmatch(r"([^/]+)/(step\d+|final)", ref)
+        ck = m and next(
+            (r for r in store.runs()
+             if r.get("study") == m.group(1)
+             and "sampler_weights" in (r.get("checkpoint_path") or "")),
+            None,
+        )
+        if ck:
+            step = m.group(2)
+            suffix = f"{int(step[4:]):06d}" if step.startswith("step") else step
+            rec = dict(ck)
+            rec["checkpoint_path"] = re.sub(
+                r"/sampler_weights/[^/]+$", f"/sampler_weights/{suffix}",
+                ck["checkpoint_path"],
+            )
+    if rec is None:
+        args.model = args.model or ref
+        return
+    args.model = args.model or rec["checkpoint_path"] or rec["model_id"]
+    if args.label is None:
+        m = re.fullmatch(r"[^/]+/(step\d+|final)", ref)
+        args.label = m.group(1) if m else None
+    inherit = {
+        "manifest": rec.get("manifest_hash"), "effort": rec.get("effort"),
+        "temperature": rec.get("temperature"), "max_tokens": rec.get("max_tokens"),
+        "k": rec.get("k"), "seed": rec.get("seed"), "renderer": rec.get("renderer"),
+        "study": rec.get("study"),
+    }
+    for k, v in inherit.items():
+        if v is not None and not _flagged(argv, k):
+            setattr(args, k, v)
 
 
 def _write_eval_config(args, path: str) -> None:
@@ -208,6 +290,137 @@ def _print_findings(findings) -> int:
 
 _RUN_REF_EPILOG = "run refs: run_id, unique id prefix, 'study/label', or a unique label"
 
+_TINKER_ENV = Path.home() / ".secrets" / "tinker.env"
+
+
+def _load_tinker_env() -> None:
+    """Autoload the tinker dotenv for paid commands; an already-set
+    TINKER_API_KEY always wins over the file."""
+    if os.environ.get("TINKER_API_KEY"):
+        return
+    from flipbook.api import load_env_file  # lazy: api pulls in fastapi
+
+    load_env_file(_TINKER_ENV)
+
+
+def _doctor(args) -> int:
+    """First-run checklist: what works, what's missing, and the fix."""
+    have_key = bool(os.environ.get("TINKER_API_KEY"))
+    rows = Path(args.store) / "runs"
+    n_runs = len(list(rows.glob("*.json"))) if rows.exists() else 0
+    dist = Path(__file__).resolve().parent.parent.parent / "web" / "dist"
+    checks = [
+        ("TINKER_API_KEY", have_key or _TINKER_ENV.exists(),
+         "in environment" if have_key
+         else f"autoloaded from {_TINKER_ENV} by paid commands" if _TINKER_ENV.exists()
+         else f"missing - put it in {_TINKER_ENV}"),
+        ("store", n_runs > 0,
+         f"{args.store} · {n_runs} runs" if n_runs
+         else "empty - `flipbook demo --synthetic` seeds it, no key needed"),
+        ("gui build", dist.exists(),
+         str(dist) if dist.exists()
+         else "missing - `cd web && npm install && npm run build` (`serve` still gives the api)"),
+    ]
+    print("flipbook doctor")
+    for name, good, note in checks:
+        print(f"  {'ok ' if good else '!! '} {name:<15} {note}")
+    print("  ·  tab completion    eval \"$(register-python-argcomplete flipbook)\"")
+    return 0 if all(g for _, g, _ in checks) else 1
+
+
+def _run_cost(store: Store, r: dict) -> float:
+    """est_cost_usd from provenance when present, else summed from samples."""
+    prov = r.get("provenance") or {}
+    if prov.get("est_cost_usd") is not None:
+        return prov["est_cost_usd"]
+    col = store.samples(r["run_id"]).column("est_cost_usd")
+    return sum(v or 0 for v in col.to_pylist())
+
+
+def _report(store: Store, study: str) -> int:
+    """'The read' as a terminal summary: the pass@1 arc, whether divergence
+    moved first, response-length collapse, and total cost."""
+    runs = [r for r in store.runs(study)]
+    if not runs:
+        raise SystemExit(f"no runs in study {study!r} - studies: "
+                         f"{sorted({r.get('study') for r in store.runs()})}")
+    def step(r):
+        return (r.get("train_step")
+                or (r.get("provenance") or {}).get("train_step_measured"))
+
+    base = next((r for r in runs if step(r) is None), None)
+    ckpts = sorted((r for r in runs if step(r) is not None), key=step)
+    if base is None or not ckpts:
+        raise SystemExit(
+            f"study {study!r} has no baseline->checkpoint arc to narrate "
+            f"({len(runs)} runs)")
+
+    _p1 = {}
+    def pass1(r):
+        """provenance pass1 when present, else computed from samples (runs
+        recorded before the lifecycle fields existed)."""
+        rid = r["run_id"]
+        if rid not in _p1:
+            p = (r.get("provenance") or {}).get("pass1")
+            if p is None:
+                s = store.samples(rid).to_pylist()
+                ok = [x for x in s if x["verdict"] is not None]
+                p = sum(x["verdict"] for x in ok) / len(ok) if ok else 0.0
+            _p1[rid] = p
+        return _p1[rid]
+
+    print(f"report: {study}")
+    arc = [f"{pass1(base):.2f}"] + [f"{pass1(r):.2f} (step {step(r)})" for r in ckpts]
+    print(f"  pass@1: {' -> '.join(arc)}")
+
+    # mean divergence + p_skip per checkpoint from its parquet, if computed
+    divdir = store.path / "divergence"
+    div = {}
+    for r in ckpts:
+        fs = list(divdir.glob(f"*__{r['run_id']}.parquet"))
+        if fs:
+            t = pq.read_table(fs[0]).to_pylist()
+            div[r["run_id"]] = {
+                "nats": sum(d["sum_nats"] for d in t) / len(t),
+                "p_skip": sum(d["p_skip_ckpt"] for d in t) / len(t),
+            }
+
+    last, first_ck = ckpts[-1], ckpts[0]
+    trough = min(ckpts, key=lambda r: pass1(r))
+    collapsed = pass1(base) - pass1(last) > 0.05
+    verdict = ("the fine-tune regressed this eval" if collapsed
+               else "the fine-tune improved this eval"
+               if pass1(last) - pass1(first_ck) > 0.05 else "no eval-visible change")
+    print(f"\n  the read: {verdict}")
+    if collapsed:
+        print(f"    pass@1 {pass1(base):.2f} -> {pass1(trough):.2f} by step {step(trough)}"
+              + (f", ending {pass1(last):.2f} (step {step(last)})" if last is not trough else ""))
+    if collapsed:
+        early = [r for r in ckpts if r["run_id"] in div and div[r["run_id"]]["nats"] < -50]
+        cliff = next((r for r in ckpts if pass1(r) < pass1(base) - 0.05), None)
+        if early and cliff and step(early[0]) <= step(cliff):
+            d = div[early[0]["run_id"]]
+            print(f"    divergence moved early: {d['nats']:.0f} nats, p_skip {d['p_skip']:.0%} "
+                  f"at step {step(early[0])}")
+    gen = {}
+    for r in (first_ck, last):
+        s = store.samples(r["run_id"]).to_pylist()
+        gen[r["run_id"]] = sum(x["gen_tokens"] for x in s) / len(s) if s else 0
+    if gen[first_ck["run_id"]] and gen[last["run_id"]] / gen[first_ck["run_id"]] < 0.4:
+        print(f"    responses shrank {gen[first_ck['run_id']]:.0f} -> {gen[last['run_id']]:.0f} tokens "
+              f"({gen[first_ck['run_id']] / gen[last['run_id']]:.0f}x shorter) - it stopped reasoning, "
+              "not just got answers wrong")
+    tm = store.training_metrics(study).to_pylist()
+    nll = [m for m in tm if m["key"] == "train/nll"]
+    if len(nll) >= 2 and collapsed:
+        print(f"    train/nll kept falling {nll[0]['value']:.2f} -> {nll[-1]['value']:.2f} "
+              "while eval fell - the loss never saw it")
+    spend = sum(_run_cost(store, r) for r in runs)
+    print(f"\n  cost: ~${spend:.2f} across {len(runs)} runs")
+    print(f"  compare: flipbook compare {study}/{base.get('label')} {study}/{last.get('label')}")
+    print(f"  inspect: flipbook serve  ->  #/study?name={study}")
+    return 0
+
 
 class _Fmt(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
     pass
@@ -216,17 +429,23 @@ class _Fmt(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFo
 _GUIDE = """\
 workflow
   1. freeze    build a manifest: frozen questions + golds + grader_ids
-  2. eval      sample a model over it (a spend forecast prints first)
+  2. eval      sample a model over it (a spend forecast prints first);
+               `flipbook eval sft/final` resolves a study checkpoint ref
+  +. train     `flipbook train` = the SFT recipe with in-loop evals
   3. compare   paired stats and flips between two runs
   4. diverge   per-token logprob gap of a checkpoint on base traces
   5. serve     read-only API + browser UI over the store
+
+no key? no spend?
+  flipbook demo --synthetic seeds a fabricated collapse arc into the
+  store - every command below works on it immediately.
 
 walkthrough
   flipbook freeze --benchmark aime2026:30 --name aime30
   flipbook eval --model thinkingmachines/Inkling-Small \\
       --manifest aime30 --effort 0.5 --label baseline
-  flipbook eval --model tinker://<run>/sampler_weights/final \\
-      --manifest aime30 --effort 0.5 --study sft --label step56
+  flipbook eval sft/final          # terse form: ref resolves the checkpoint
+                                   # path and inherits manifest/effort/k/...
   flipbook compare baseline sft/step56
   flipbook show sft/step56 <row_id>
   flipbook diverge --base baseline --ckpt sft/step56
@@ -235,8 +454,9 @@ walkthrough
 inspecting
   the GUI is a read-only view over the store directory - nothing lives
   in the server. kill it, move the store, serve it again: same results.
-  the one paid action (branch probe) needs TINKER_API_KEY; serve loads
-  ~/.secrets/tinker.env if it exists.
+  anything that samples needs TINKER_API_KEY; paid commands autoload
+  ~/.secrets/tinker.env when the env var isn't already set.
+  `flipbook doctor` checks the first-run setup end to end.
 
 during training
   flipbook track <cookbook run dir> --manifest aime30 --study sft
@@ -300,19 +520,29 @@ def main(argv: list[str] | None = None) -> int:
                "a spend forecast prints before the first paid call; "
                "--forecast prints it and exits.",
     )
-    # required=False on model/manifest: --config can supply them; validated post-merge
+    # required=False on model/manifest: --config or a positional ref supplies
+    # them; validated post-merge
     _add_eval_args(p, required=False)
+    p.add_argument("ref", nargs="?",
+                   help="model name, tinker:// path, or run ref (run_id prefix, "
+                        "'study/label', 'study/stepN', 'study/final'); a run ref "
+                        "inherits its config for flags not explicitly set"
+                   ).completer = _complete_run_ref
     p.add_argument("--config", default=None, metavar="FILE",
                    help="TOML of eval settings; explicit flags override")
     p.add_argument("--save-config", default=None, metavar="FILE",
                    help="write the resolved settings to TOML and exit")
-    p.add_argument("--forecast", action="store_true")
-    p.add_argument("--concurrency", type=int, default=8)
+    p.add_argument("--forecast", action="store_true",
+                   help="print the spend estimate and exit without sampling")
+    p.add_argument("--concurrency", type=int, default=8,
+                   help="max parallel sampling calls")
     _add_store(p)
     p = Sub(
         "demo",
         help="one-command tour: freeze a small manifest, eval the base model, then `flipbook serve`",
     )
+    p.add_argument("--synthetic", action="store_true",
+                   help="seed a fabricated collapse story instead - no key, no spend")
     p.add_argument("--model", default="thinkingmachines/Inkling-Small")
     p.add_argument("--benchmark", default="math500:8", help="NAME[:n] to freeze as 'demo'")
     p.add_argument("--effort", type=float, default=0.9)
@@ -331,6 +561,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("text")
     p.add_argument("--grader", required=True).completer = _complete_grader
     p.add_argument("--gold", required=True)
+    p = Sub("models", help="list models the tinker registry knows")
+    p.add_argument("--json", action="store_true")
     p = Sub("manifests", help="list manifests in the store")
     p.add_argument("--json", action="store_true")
     _add_store(p)
@@ -338,6 +570,9 @@ def main(argv: list[str] | None = None) -> int:
         "status",
         help="store at a glance: studies, coverage gaps, and the commands that fill them",
     )
+    _add_store(p)
+    p = Sub("report", help="'the read' for a study as a terminal summary")
+    p.add_argument("study").completer = _complete_study
     _add_store(p)
 
     p = Sub("runs", aliases=["evals"], help="list eval runs in the store")
@@ -401,6 +636,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("log_dir")
     p.add_argument("--study", required=True)
     _add_store(p)
+    p = Sub("train",
+            help="run the SFT training recipe (scripts/train_demo.py): "
+                 "`train data` builds the jsonl, `train train --study S --manifest M` "
+                 "trains with in-loop checkpoint evals; `train train --help` lists knobs")
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = Sub("doctor", help="first-run checklist: secrets, store, gui build, completion")
+    _add_store(p)
     p = Sub("serve", help="read-only API + GUI over the store")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8484)
@@ -425,6 +667,8 @@ def main(argv: list[str] | None = None) -> int:
         ap.print_help()
         return 2
     args = ap.parse_args(argv)
+    if args.cmd in ("eval", "demo", "track", "diverge", "effort"):
+        _load_tinker_env()
     if args.cmd == "guide":
         print(_GUIDE)
         return 0
@@ -443,11 +687,26 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "demo":
         store = _store(args)
+        if args.synthetic:
+            study = seed_synthetic(store)
+            print(f"seeded '{study}': 4 runs on {MANIFEST_NAME} - a fabricated SFT")
+            print("collapse (baseline ~0.92 -> step24 ~0.02 -> final ~0.05) with")
+            print("samples, -1800-nat divergence traces, and a p_skip spike.")
+            print("\nnumbers are invented - they demo the workflow, not a real model.")
+            print("\nnext:")
+            print("  flipbook status                                   # coverage gaps")
+            print(f"  flipbook compare {study}/baseline {study}/step24   # the cliff")
+            print("  flipbook serve                                    # inspect in the GUI")
+            return 0
+        print("demo: freeze a manifest -> eval the base model -> compare -> serve")
         if store.manifest_doc("demo") is None:
             bench, n = args.benchmark.rsplit(":", 1)
             m = Manifest.freeze({bench: int(n)}, seed=0, name="demo")
             store.put_manifest(m.to_doc(), m.rows)
-            print(f"froze demo: {len(m.rows)} rows from {bench}")
+            print(f"1/2 froze 'demo': {len(m.rows)} rows from {bench}")
+        else:
+            print("1/2 'demo' manifest already frozen")
+        print(f"2/2 evaluating {args.model} (effort {args.effort}, k={args.k}) ...")
         # reuse the eval pipeline verbatim - demo is just defaults around it
         args = argparse.Namespace(
             cmd="demo",
@@ -458,13 +717,20 @@ def main(argv: list[str] | None = None) -> int:
             config=None, save_config=None, store=args.store,
         )
     if args.cmd in ("eval", "demo"):
+        store = _store(args)
         if args.cmd == "eval":
-            _merge_eval_config(args, argv if argv is not None else sys.argv[1:])
+            real_argv = argv if argv is not None else sys.argv[1:]
+            _merge_eval_config(args, real_argv)
+            _resolve_eval_ref(args, store, real_argv)
+            if not args.model or not args.manifest:
+                raise SystemExit(
+                    "eval needs weights and a manifest - pass a ref "
+                    "(`flipbook eval sft_ink/step64`), --model + --manifest, or --config"
+                )
         if args.save_config:
             _write_eval_config(args, args.save_config)
             print(f"wrote {args.save_config} - run it with `flipbook eval --config {args.save_config}`")
             return 0
-        store = _store(args)
         base_model, renderer = asyncio.run(_resolve(args))
         cfg = _build_cfg(args, store, base_model, renderer)
         findings = lint(cfg, base_model, grader_ids=_grader_ids(store, args.manifest))
@@ -489,7 +755,12 @@ def main(argv: list[str] | None = None) -> int:
               f"{summ.n_errors} errors, pass@1={summ.pass1}, "
               f"~${summ.est_cost_usd or 0:.4f}")
         if args.cmd == "demo":
-            print("inspect it: flipbook serve  ·  list runs: flipbook evals")
+            # one eval can't show a regression - suggest a second point at a
+            # different effort so `compare` has a pair (rerun inherits config)
+            print("\nto compare two points, eval the same config at a different effort:")
+            print("  flipbook eval demo/demo --effort 0.1 --label effort0.1")
+            print("  flipbook compare demo/demo demo/effort0.1")
+            print("\ninspect everything: flipbook serve")
         return 0
     if args.cmd == "lint":
         store = _store(args)
@@ -530,6 +801,20 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(f"verdict={g.verdict} extracted={g.extracted!r} note={g.note}")
         return 0
+    if args.cmd == "models":
+        from tinker_cookbook import model_info
+        out = []
+        for n in _model_names():
+            a = model_info.get_model_attributes(n)
+            rends = model_info.get_recommended_renderer_names(n)
+            out.append({"model": n, "renderer": rends[0] if rends else None,
+                        "size": a.size_str})
+        if args.json:
+            print(json.dumps(out, indent=2))
+        else:
+            for r in out:
+                print(f"{r['model']:<50} {r['renderer'] or '-':<14} {r['size'] or ''}")
+        return 0
     if args.cmd == "manifests":
         store = _store(args)
         docs = store.manifests()
@@ -542,11 +827,15 @@ def main(argv: list[str] | None = None) -> int:
                   f"{d.get('n_rows', len(d.get('rows', []))):>5}  "
                   f"{str(d.get('created_at', '-'))[:10]}")
         return 0
+    if args.cmd == "report":
+        return _report(_store(args), args.study)
     if args.cmd == "status":
         store = _store(args)
         runs = store.runs()
         mnames = {d["manifest_hash"]: d["name"] for d in store.manifests()}
-        print(f"{len(mnames)} manifests · {len(runs)} eval runs in {store.path}")
+        spend = sum(_run_cost(store, r) for r in runs)
+        print(f"{len(mnames)} manifests · {len(runs)} eval runs in {store.path}"
+              + (f" · ~${spend:.2f} total" if spend else ""))
         studies: dict[str, list[dict]] = {}
         for r in runs:
             studies.setdefault(r.get("study") or "-", []).append(r)
@@ -564,7 +853,11 @@ def main(argv: list[str] | None = None) -> int:
                 None,
             )
             mans = {mnames.get(r.get("manifest_hash"), str(r.get("manifest_hash"))[:12]) for r in rs}
-            print(f"\n{name} - {len(rs)} runs on {', '.join(sorted(mans))}")
+            live = sum(1 for r in rs if r.get("state") == "running")
+            sspend = sum(_run_cost(store, r) for r in rs)
+            print(f"\n{name} - {len(rs)} runs on {', '.join(sorted(mans))}"
+                  + (f" · ~${sspend:.2f}" if sspend else "")
+                  + (f"  ({live} still sampling)" if live else ""))
             if not ckpts:
                 continue
             steps = [r["provenance"]["train_step_measured"] for r in ckpts]
@@ -732,6 +1025,9 @@ def main(argv: list[str] | None = None) -> int:
             for n in sorted(pair.passn, key=int):
                 e = pair.passn[n]
                 print(f"  pass@{n} {e['a']:.3f} → {e['b']:.3f}")
+            for n in sorted(pair.scoren, key=int):
+                e = pair.scoren[n]
+                print(f"  score@{n} {e['a']:.3f} → {e['b']:.3f}")
             for f in pair.flips:
                 tag = "HARD " if f["hard"] else ""
                 kind = kind_by_row.get(f["row_id"])
@@ -740,6 +1036,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {tag}{f['kind']}: {f['row_id']}  {f['p_a']:.2f} → {f['p_b']:.2f}{tail}{q}")
             for e in pair.excluded:
                 print(f"  excluded {e['row_id']}: {e['reason']}")
+            if not args.gate:
+                print(f"\ninspect: http://127.0.0.1:8484/#/compare?a={pair.run_a}&b={pair.run_b}")
         if args.gate:
             ok, reasons = gate(pair, args.max_regression, args.max_new_truncation_rate)
             for r in reasons:
@@ -801,11 +1099,34 @@ def main(argv: list[str] | None = None) -> int:
         n = import_metrics(_store(args), args.log_dir, args.study)
         print(f"imported {n} metric rows for study {args.study}")
         return 0
+    if args.cmd == "train":
+        script = Path(__file__).resolve().parent.parent.parent / "scripts" / "train_demo.py"
+        if not script.exists():
+            raise SystemExit("training recipe not found at scripts/train_demo.py - run from the repo root")
+        import subprocess
+        rc = subprocess.call([sys.executable, str(script), *args.rest])
+        if rc == 0:
+            print("\ninspect the trajectory: flipbook serve  ->  #/study")
+        raise SystemExit(rc)
+    if args.cmd == "doctor":
+        return _doctor(args)
     if args.cmd == "serve":
         from flipbook.api import load_env_file, serve
         loaded = load_env_file(Path(args.env_file).expanduser())
         if loaded:
             print(f"loaded {', '.join(loaded)} from {args.env_file}", flush=True)
+        # probe first - uvicorn swallows bind errors into a bare ERROR log
+        import socket
+        probe = socket.socket()
+        try:
+            probe.bind((args.host, args.port))
+        except OSError:
+            probe.close()
+            raise SystemExit(
+                f"port {args.port} is busy - already serving at "
+                f"http://{args.host}:{args.port} (or pass --port {args.port + 1})"
+            ) from None
+        probe.close()
         print(f"serving {args.store} at http://{args.host}:{args.port}", flush=True)
         serve(args.store, host=args.host, port=args.port, open_browser=not args.no_open)
         return 0

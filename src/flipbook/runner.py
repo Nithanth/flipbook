@@ -110,6 +110,10 @@ def _failure_kind(
     # when it caused the failure, and an empty message is not a parse failure
     if verdict == 1.0:
         return None
+    # a graded score is a quality signal, not a mechanism - label it before
+    # truncation so partial credit isn't misread as a hard failure
+    if 0.0 < verdict < 1.0:
+        return "partial"
     if stop_reason == "length":
         return "truncation"
     if is_empty_response(text):
@@ -124,11 +128,19 @@ def _failure_kind(
     return "wrong_answer"
 
 
-def _train_step(checkpoint_path: str | None) -> int | None:
-    if not checkpoint_path:
-        return None
-    m = re.search(r"/(\d+)$", checkpoint_path)
-    return int(m.group(1)) if m else None
+def _train_step(checkpoint_path: str | None, label: str | None = None) -> int | None:
+    # numeric checkpoint suffix wins; the "step<N>" label convention covers
+    # non-numeric paths (e.g. sampler_weights/final). Exact match only - a
+    # label like "v2" or "baseline_3" is not a step claim.
+    if checkpoint_path:
+        m = re.search(r"/(\d+)$", checkpoint_path)
+        if m:
+            return int(m.group(1))
+    if label:
+        m = re.fullmatch(r"step(\d+)", label)
+        if m:
+            return int(m.group(1))
+    return None
 
 
 def _prior_gen_mean(store: Store, manifest_hash: str, effort: float | None) -> tuple[float, list[str]] | None:
@@ -258,6 +270,39 @@ async def evaluate_async(
     # this even when the caller didn't ask for a dry run
     log(forecast_line)
 
+    cb_ver = importlib.metadata.version("tinker-cookbook")
+    renderer_version = (
+        f"tml-renderers=={importlib.metadata.version('tml-renderers')}"
+        if resolved.renderer == "tml_v0"
+        else f"tinker-cookbook=={cb_ver}"
+    )
+    record = {
+        "run_id": rid, "config_fp": config_fp(cfg), "created_at": datetime.now(UTC).isoformat(),
+        "manifest_hash": manifest.manifest_hash, "study": cfg.study, "source": "eval",
+        # unlabeled runs still get an addressable name: tail of
+        # "org/Model" or "tinker://…/weights_name" (Store.resolve_run)
+        "label": cfg.label or cfg.model.rsplit("/", 1)[-1],
+        "model_id": resolved.base_model,
+        "checkpoint_path": resolved.checkpoint_path,
+        "base_model": resolved.base_model if resolved.checkpoint_path else None,
+        "train_step": _train_step(resolved.checkpoint_path, cfg.label),
+        "renderer": resolved.renderer, "renderer_version": renderer_version,
+        "effort": cfg.effort, "temperature": cfg.temperature,
+        "max_tokens": cfg.max_tokens, "k": cfg.k, "seed": cfg.seed,
+        "grader_id": "benchmark-native",
+        "grader_version": f"tinker-cookbook=={cb_ver}",
+        "sdk_versions": {
+            "tinker": importlib.metadata.version("tinker"),
+            "tinker-cookbook": cb_ver,
+            "tml-renderers": importlib.metadata.version("tml-renderers"),
+        },
+        # lifecycle: "running" until the final write - a killed eval leaves a
+        # resumable record + partial samples instead of vanishing
+        "state": "running",
+        "provenance": {"evaluated_cells": cells},
+    }
+    store.put_run(record)
+
     # an injected client skips creating a new one, cfg.model still carries the path for identity and provenance
     client = sampling_client or (
         sc.create_sampling_client(model_path=resolved.checkpoint_path)
@@ -315,46 +360,26 @@ async def evaluate_async(
 
             return await asyncio.gather(*(one(i) for i in missing))
 
+    # samples flush every 25 rows (same cadence as the progress log) - a
+    # killed eval keeps its finished cells, so a rerun resumes via dedupe
     new_rows = []
     for done_n, coro in enumerate(asyncio.as_completed([work(r) for r in rows]), start=1):
         new_rows.extend(await coro)
         if done_n % 25 == 0 or done_n == len(rows):
+            store.put_samples(rid, new_rows)
+            new_rows.clear()
             log(f"  {done_n}/{len(rows)} rows sampled")
-    store.put_samples(rid, new_rows)
-
-    cb_ver = importlib.metadata.version("tinker-cookbook")
-    renderer_version = (
-        f"tml-renderers=={importlib.metadata.version('tml-renderers')}"
-        if resolved.renderer == "tml_v0"
-        else f"tinker-cookbook=={cb_ver}"
-    )
-    store.put_run(
-        {
-            "run_id": rid, "config_fp": config_fp(cfg), "created_at": datetime.now(UTC).isoformat(),
-            "manifest_hash": manifest.manifest_hash, "study": cfg.study, "source": "eval",
-            # unlabeled runs still get an addressable name: tail of
-            # "org/Model" or "tinker://…/weights_name" (Store.resolve_run)
-            "label": cfg.label or cfg.model.rsplit("/", 1)[-1],
-            "model_id": resolved.base_model,
-            "checkpoint_path": resolved.checkpoint_path,
-            "base_model": resolved.base_model if resolved.checkpoint_path else None,
-            "train_step": _train_step(resolved.checkpoint_path),
-            "renderer": resolved.renderer, "renderer_version": renderer_version,
-            "effort": cfg.effort, "temperature": cfg.temperature,
-            "max_tokens": cfg.max_tokens, "k": cfg.k, "seed": cfg.seed,
-            "grader_id": "benchmark-native",
-            "grader_version": f"tinker-cookbook=={cb_ver}",
-            "sdk_versions": {
-                "tinker": importlib.metadata.version("tinker"),
-                "tinker-cookbook": cb_ver,
-                "tml-renderers": importlib.metadata.version("tml-renderers"),
-            },
-            "provenance": {"evaluated_cells": cells},
-        }
-    )
 
     done = store.samples(rid).to_pylist()
     ok = [s for s in done if s["verdict"] is not None]
+    record["state"] = "done"
+    record["provenance"].update({
+        "n_samples": len(done),
+        "pass1": sum(s["verdict"] for s in ok) / len(ok) if ok else None,
+        "est_cost_usd": sum(s["est_cost_usd"] or 0 for s in done) or None,
+    })
+    store.put_run(record)
+
     return RunSummary(
         run_id=rid,
         manifest_hash=manifest.manifest_hash,

@@ -179,3 +179,12 @@ def test_status_reports_coverage_gaps(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "s - 2 runs" in out
     assert "divergence   0/1" in out and "missing: step 8" in out
+
+
+def test_status_marks_running_runs(tmp_path, capsys):
+    from flipbook.cli import main
+    store = Store(str(tmp_path))
+    store.put_run({"run_id": "a" * 12, "study": "s", "label": "baseline"})
+    store.put_run({"run_id": "b" * 12, "study": "s", "label": "step8", "state": "running"})
+    assert main(["status", "--store", str(tmp_path)]) == 0
+    assert "1 still sampling" in capsys.readouterr().out

@@ -333,8 +333,6 @@ td.tracexp .sub { margin-top: 6px; }
 }
 .outtext.thinking { opacity: .8; }
 .outtext .muted { opacity: .55; font-style: italic; }
-.lnk { color: var(--accent); cursor: pointer; }
-.lnk:hover { text-decoration: underline; }
 /* reserved toggles line under every sample meta - keeps paired boxes aligned */
 .togglerow { display: flex; gap: 6px; margin: 4px 0; min-height: 26px; }
 /* extracted answer as a small framed chip - echoes \boxed{} */

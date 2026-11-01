@@ -36,6 +36,12 @@ Two properties made this the choice over SQLite or a real database:
 - **Identity is hashed, not labeled.** `manifest_hash` and `run_id` are
   sha256 fingerprints of content; names and labels are display metadata and
   never participate in keys.
+- **Runs have a lifecycle.** `eval` writes the run record with
+  `state: "running"` before the first paid call, flushes samples every 25
+  rows, and finishes with `state: "done"` plus measured results in
+  `provenance`. A killed eval keeps its completed cells and a rerun resumes
+  via dedupe; readers treat `state == "running"` as partial progress, not a
+  finished point.
 
 DuckDB opens a fresh in-memory connection per query, so readers hold no
 shared state and need no locks.

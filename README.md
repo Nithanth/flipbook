@@ -1,67 +1,132 @@
 # flipbook
 
-> Trajectory-level regression analysis for Tinker fine-tuning: which examples
-> flipped, *where in the reasoning* the checkpoints diverge, and whether model
-> still responds to effort.
+Regression analysis for [Tinker](https://thinkingmachines.ai/tinker/) fine-tuning runs.
+You freeze an eval set, sample each checkpoint against it, and flipbook tells
+you which examples got better, which got worse, what it cost, and where in the
+output the model's behavior changed.
 
-## Eval data
+It exists because train loss only measures the training task. A checkpoint can
+improve on its objective every step while breaking on everything else, and
+nothing in the loop will tell you. Per-example evals during training will.
 
-`flipbook freeze --benchmark name:n --name M` freezes a benchmark subset into
-a manifest. For custom tasks, `--from-jsonl file.jsonl --benchmark NAME`
-freezes one `{"question"|"messages", "gold", "grader_id"}` object per line
-(`"system"` prepends a system message to the question form).
-
-`flipbook graders` lists registered graders (`gsm8k`, `math500`, `aime`,
-`exact`, `number`, `boxed`, `contains`); `regex:<pattern>` and
-`module.path:func` also resolve. `flipbook grade TEXT --grader ID --gold G`
-dry-runs a grader on one text.
-
-`flipbook compare` reports pass@n (unbiased estimator) for every n up to the
-smaller run's k, paired deltas with bootstrap CIs, and per-question flips.
-
-`flipbook eval --config eval.toml` reads the same settings from TOML
-(file = defaults, explicit flags always override — see
-`examples/eval_baseline.toml`).
-
-`flipbook diverge --base A --ckpt B` rescores the baseline's own sampled
-traces under the checkpoint: per-token `lp_ckpt − lp_base` in nats, plus the
-model's probability of emitting nothing (`p_skip`). This is how you see the
-internals move *before* accuracy does. `flipbook effort` measures whether the
-effort dial still modulates the model.
-
-`flipbook guide` prints the full workflow. Tab completion via
-`eval "$(register-python-argcomplete flipbook)"` completes run labels,
-manifest names, studies, grader ids, and row ids.
-
-## Inspecting
+## Try it without a key
 
 ```bash
-flipbook serve        # read-only GUI at localhost:8484, opens the browser
+git clone https://github.com/Nithanth/flipbook && cd flipbook
+uv sync
+uv run flipbook demo --synthetic
+uv run flipbook serve
 ```
 
-Everything lives in the store directory — the server owns no state, so a
-store can be moved, copied, or served anywhere. Four screens: **study** (one
-training run's checkpoints vs train loss — the "optimizer happy, eval broken"
-chart, with a plain-language read of what moved first), **runs** (per-run
-table with config provenance), **compare** (paired stats, CIs, flips),
-**divergence** (per-token disagreement heatmap over the baseline's traces,
-with a branch probe that asks "what would the checkpoint have said here?").
+`demo --synthetic` writes a fabricated training study into a local store.
+`serve` opens the GUI at http://127.0.0.1:8484. The data is invented and
+labeled as such; it is there so every screen and command has something to show.
 
-During training, `flipbook track <cookbook log dir> --manifest M --study S`
-evaluates every checkpoint as it lands and groups the runs into a study —
-that's what the study screen draws. The GUI is strictly read-only: the CLI is
-the control panel (it forecasts spend before any sampling), the GUI is for
-inspection.
+Terminal equivalents of the GUI:
 
-`flipbook serve` loads `~/.secrets/tinker.env` if present — needed only for
-the one paid GUI action (the branch probe). Nothing else in the UI spends
-money.
+```bash
+uv run flipbook status                                      # what is in the store
+uv run flipbook report synthetic                            # one-paragraph summary of a study
+uv run flipbook compare synthetic/baseline synthetic/step24 # paired stats and per-example flips
+uv run flipbook show synthetic/step24 synthetic-1           # one question, every sample
+```
+
+## Use it on your own runs
+
+Requirements: Python 3.12+, [uv](https://docs.astral.sh/uv/), a Tinker API key.
+Node is only needed to build the GUI (`cd web && npm install && npm run build`);
+without it `serve` still exposes the JSON API.
+
+```bash
+export TINKER_API_KEY=...        # or put it in ~/.secrets/tinker.env
+uv run flipbook doctor           # checks key, store, GUI build
+```
+
+Everything below is `uv run flipbook <command>`. Any command that samples a
+model prints a cost forecast first.
+
+**1. Freeze an eval set.** Rows, gold answers, and grader ids are hashed into a
+manifest so every run is scored on identical inputs.
+
+```bash
+flipbook freeze --benchmark aime2026:30 --name aime30            # from a cookbook benchmark
+flipbook freeze --from-jsonl tasks.jsonl --benchmark mine --name mine   # from your own file
+```
+
+A JSONL row is `{"question": ..., "gold": ..., "grader_id": ...}` (or
+`"messages": [...]` instead of `"question"`). Built-in graders cover exact,
+numeric, boxed, regex, and the math benchmarks; `module.path:func` loads your
+own, including LLM-as-judge or fractional scores. `flipbook graders` lists them.
+
+**2. Evaluate a model.**
+
+```bash
+flipbook eval --model thinkingmachines/Inkling-Small --manifest aime30 \
+    --effort 0.9 --k 2 --study myrun --label baseline
+```
+
+**3. Train with evals in the loop.** `flipbook train` runs the included SFT
+recipe (`scripts/train_demo.py`) and evaluates every saved checkpoint into the
+same study. For your own cookbook training loop, point `flipbook track <log dir>`
+at it afterward, or add the evaluator from `flipbook.evaluator` to your config.
+
+```bash
+flipbook train data                                        # writes data/gsm8k_sft.jsonl
+flipbook train train --study myrun --manifest aime30       # trains, evals each checkpoint into the study
+flipbook eval myrun/final          # refs resolve checkpoint paths and inherit the study's settings
+```
+
+`flipbook train train --help` lists the recipe's knobs (model, LoRA rank,
+epochs, eval cadence).
+
+**4. Look at what changed.**
+
+```bash
+flipbook status                         # studies, cost, which steps still lack divergence or effort data
+flipbook report myrun                   # the summary
+flipbook compare myrun/baseline myrun/final
+flipbook diverge --base myrun/baseline --ckpt myrun/final   # per-token logprob shift on the baseline's own traces
+flipbook effort --run myrun/final --pair 0.2,0.9            # does the effort setting still change the output
+flipbook serve
+```
+
+`flipbook guide` prints this workflow in the terminal. Tab completion:
+`eval "$(register-python-argcomplete flipbook)"`.
+
+## What the numbers mean
+
+- **pass@1**: mean verdict per question. Works for binary and fractional graders.
+- **pass@n**: probability at least one of n samples is fully correct (unbiased estimator).
+- **score@n**: expected best score over n samples; shown when verdicts are not binary.
+- **delta, CI**: paired per-question change against the baseline with a bootstrap 95% interval. Deltas inside the interval are noise.
+- **flips**: questions that went right to wrong (regressions) or wrong to right (gains).
+- **failure kinds**: empty, truncation, parse, wrong_answer, partial. Tells you *how* a sample failed, not just that it did.
+- **divergence**: summed per-token logprob difference of a checkpoint against the baseline, scored on the baseline's own sampled traces. Measures how far the policy moved on those inputs.
+- **p_skip**: probability the model ends its turn immediately.
+- **effort gap**: logprob difference between two effort settings. Near zero means the setting no longer does anything.
+
+## Design
+
+- The CLI is the only thing that spends money or writes to the store. The GUI is read-only.
+- The store is a directory of Parquet and JSON files (`./flipbook_store` by default, or `--store`, or `FLIPBOOK_STORE`). The server holds no state; copy the directory anywhere and serve it.
+- Run identity is a hash of the full config. Re-running the same eval resumes from the samples already on disk, including after a killed process.
+- Nothing is specific to math. The manifest decides the task and the grader decides the score; `examples/language_tasks.jsonl` and `examples/language_graders.py` show a non-math setup.
+
+## An example of what it catches
+
+Fine-tuning Inkling-Small on 1,024 GSM8K solutions (LoRA rank 32) dropped
+its pass@1 on AIME 2026 from 0.93 to 0.02 by step 24, while train loss fell
+steadily the whole way. The per-example evals showed why: the training targets
+contained no reasoning segment, and the model learned to stop producing one.
+At step 24, 42 of 60 responses were empty. The same recipe on the larger
+Inkling model did the same thing. `flipbook report` on either study tells
+that story from the stored samples.
 
 ## Development
 
 ```bash
-uv sync --extra dev
+uv sync
 uv run pytest -q
 uv run ruff check src tests
-uv run scripts/verify_instrument.py   # --offline skips live API checks
+cd web && npm install && npm run build
 ```

@@ -67,12 +67,56 @@ def test_eval_config_file_merge(tmp_path):
     except SystemExit as e:
         assert "lskdjf" in str(e)
 
+    # a missing model/manifest is not a merge error anymore - the positional
+    # ref can supply both, so validation moved into the eval dispatch
     args = argparse.Namespace(config=None, model=None, manifest=None)
-    try:
-        _merge_eval_config(args, ["eval"])
-        raise AssertionError("should have exited")
-    except SystemExit:
-        pass
+    _merge_eval_config(args, ["eval"])
+    assert args.model is None
+
+
+def test_eval_ref_resolves_checkpoint_and_inherits(tmp_path):
+    import argparse
+
+    from flipbook.cli import _resolve_eval_ref
+    from flipbook.store import Store
+
+    store = Store(str(tmp_path))
+    store.put_run({
+        "run_id": "r1", "study": "s", "label": "step24",
+        "checkpoint_path": "tinker://abc:train:0/sampler_weights/000024",
+        "model_id": "thinkingmachines/Inkling-Small", "manifest_hash": "mh",
+        "effort": 0.9, "temperature": 0.6, "k": 2, "seed": 0,
+        "renderer": "tml_v0", "max_tokens": 8192,
+    })
+    base = {"ref": "s/step8", "model": None, "manifest": None, "effort": None,
+            "temperature": 0.7, "max_tokens": 32768, "k": 4, "seed": 0,
+            "renderer": None, "study": None, "label": None}
+    args = argparse.Namespace(**base)
+    _resolve_eval_ref(args, store, ["eval", "s/step8"])
+    # the path is synthesized off the study's recorded sampler path, and the
+    # rest of the config is inherited from that checkpoint's eval
+    assert args.model == "tinker://abc:train:0/sampler_weights/000008"
+    assert (args.manifest, args.k, args.temperature) == ("mh", 2, 0.6)
+    assert (args.study, args.label) == ("s", "step8")
+
+    args = argparse.Namespace(**{**base, "k": 1})
+    _resolve_eval_ref(args, store, ["eval", "s/step8", "--k", "1"])
+    assert args.k == 1  # explicit flag wins over the ref's k=2
+
+
+def test_eval_ref_unknown_falls_back_to_model(tmp_path):
+    import argparse
+
+    from flipbook.cli import _resolve_eval_ref
+    from flipbook.store import Store
+
+    args = argparse.Namespace(
+        ref="thinkingmachines/Inkling-Small", model=None, manifest=None,
+        effort=None, temperature=0.7, max_tokens=32768, k=4, seed=0,
+        renderer=None, study=None, label=None,
+    )
+    _resolve_eval_ref(args, Store(str(tmp_path)), ["eval"])
+    assert args.model == "thinkingmachines/Inkling-Small"
 
 
 def test_save_config_roundtrip(tmp_path):

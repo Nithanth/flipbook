@@ -169,24 +169,28 @@ export function Spark({
   w = 220,
   h = 28,
   n,
+  scale,
 }: {
   delta: number[];
   mark: number | null;
   w?: number;
   h?: number;
   n?: number;
+  /** shared |delta| ceiling (e.g. pair p95) - without it each row
+      self-normalizes and bar heights stop comparing across rows */
+  scale?: number;
 }) {
   if (!delta.length) return null;
   const step = Math.max(1, Math.floor(delta.length / w));
   const pts: number[] = [];
   for (let i = 0; i < delta.length; i += step) pts.push(delta[i]);
-  const max = Math.max(1e-9, ...pts.map(Math.abs));
+  const max = Math.max(1e-9, scale ?? Math.max(1e-9, ...pts.map(Math.abs)));
   const bw = w / pts.length;
   return (
     <svg width={w} height={h} className="spark">
       <line x1={0} x2={w} y1={h / 2} y2={h / 2} style={{ stroke: "var(--border)" }} />
       {pts.map((d, i) => {
-        const bh = (Math.abs(d) / max) * (h / 2);
+        const bh = Math.min(h / 2, (Math.abs(d) / max) * (h / 2));
         return (
           <rect
             key={i}
