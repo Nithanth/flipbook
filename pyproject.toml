@@ -21,6 +21,9 @@ dependencies = [
     "duckdb==1.5.5",
 ]
 
+[project.scripts]
+flipbook = "flipbook.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "ipykernel==7.3.0",
