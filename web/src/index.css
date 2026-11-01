@@ -184,6 +184,14 @@ tr.fk-on td { color: var(--warn); }
 td.tracexp { background: var(--surface); border-top: none; padding: 10px 14px; }
 td.tracexp .sub { margin-top: 6px; }
 
+.gridcontrols { display: flex; gap: 14px; align-items: center; margin: 2px 0 0; }
+.gridcontrols label { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
+.qfilter {
+  background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 4px 9px; font: inherit; font-size: 13px;
+  width: 240px;
+}
+.qfilter::placeholder { color: var(--muted); }
 .chipgrid { display: flex; flex-wrap: wrap; gap: 3px; margin: 10px 0 4px; }
 .chip {
   width: 24px;

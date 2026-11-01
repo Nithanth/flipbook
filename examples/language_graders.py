@@ -16,7 +16,10 @@ import threading
 
 from flipbook.graders import Grade
 
-_JUDGE_MODEL = "thinkingmachines/Inkling-Small"
+# Inkling-Small proved a strict/inconsistent judge on correct outputs
+# (docs/observations.md); a bigger model judging smaller outputs is the
+# standard arrangement and keeps judge noise out of the verdict stream.
+_JUDGE_MODEL = "thinkingmachines/Inkling"
 _JUDGE_PROMPT = (
     "You are a strict grader. A model was asked to satisfy a criterion.\n\n"
     "Criterion: {criterion}\n\nModel response:\n{response}\n\n"
@@ -95,8 +98,11 @@ def _judge_call(criterion: str, response: str) -> bool:
         resp = await client.sample_async(
             ModelInput.from_ints(prompt),
             num_samples=1,
+            # generous cap: thinking tokens count toward it, and Inkling's
+            # thinking block alone can exceed 16 — an empty final message
+            # would parse as a false NO
             sampling_params=SamplingParams(
-                max_tokens=16, temperature=0.0, stop=renderer.get_stop_sequences()
+                max_tokens=1024, temperature=0.0, stop=renderer.get_stop_sequences()
             ),
         )
         msg, _ = renderer.parse_response(resp.sequences[0].tokens)

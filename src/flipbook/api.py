@@ -15,37 +15,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from flipbook.budget import budget
+from flipbook.decode import thinking as _thinking
+from flipbook.decode import tokenizer as _tokenizer
 from flipbook.graders import strip_control_tokens
 from flipbook.stats import compare
 from flipbook.store import Store
 
 # sample rows carry token_ids/logprobs/messages
 _HEAVY_COLS = {"token_ids", "token_logprobs", "messages"}
-
-
-@lru_cache(maxsize=4)
-def _tokenizer(model_id: str):
-    # per-id decode is what we need (token boundaries), so keep the raw tokenizer
-    from tinker_cookbook.tokenizer_utils import get_tokenizer
-
-    return get_tokenizer(model_id)
-
-
-def _thinking(model_id: str | None, token_ids: list | None, text: str | None) -> str | None:
-    """Decoded generation preceding the stored final message, or None.
-
-    `text` is only the post-thinking message the renderer parsed; token_ids
-    carry the whole generation, so everything before `text` is the thinking.
-    """
-    if not model_id or not token_ids or not text:
-        return None
-    full = _tokenizer(model_id).decode([int(i) for i in token_ids])
-    # WHY a 40-char prefix: the stored text may be whitespace-trimmed relative
-    # to the decode, so an exact full-string find can miss
-    offset = full.find(text[:40])
-    if offset < 0:
-        return None
-    return strip_control_tokens(full[:offset]).strip()
 
 
 def _rows(table: pa.Table, drop: set[str] | None = None) -> list[dict]:
@@ -84,7 +61,14 @@ def create_app(store_path: str | Path) -> FastAPI:
 
     @app.get("/api/runs")
     def runs(study: str | None = None) -> list[dict]:
-        return json.loads(json.dumps([_norm_run(r) for r in store.runs(study)], default=str))
+        out = []
+        for r in store.runs(study):
+            r = _norm_run(r)
+            t = store.samples(r["run_id"])
+            vs = [v for v in t.column("verdict").to_pylist() if v is not None]
+            r["acc"] = sum(vs) / len(vs) if vs else None
+            out.append(r)
+        return json.loads(json.dumps(out, default=str))
 
     @app.get("/api/runs/{run_id}/samples")
     def samples(run_id: str, full: bool = False) -> list[dict]:
@@ -123,7 +107,7 @@ def create_app(store_path: str | Path) -> FastAPI:
         if not mrow:
             raise HTTPException(404, f"no row {row} in manifest for run {a}")
         keep = {"sample_idx", "text", "gen_tokens", "stop_reason",
-                "verdict", "extracted", "failure_kind"}
+                "verdict", "extracted", "failure_kind", "grade_note"}
 
         def side(rid: str) -> list[dict]:
             run = next((r for r in store.runs() if r["run_id"] == rid), None) or {}

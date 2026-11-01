@@ -6,6 +6,7 @@ Writes are tmp+rename atomic, a reader sees old or new, never torn.
 
 import json
 import os
+import warnings
 from pathlib import Path
 
 import duckdb
@@ -35,7 +36,7 @@ SAMPLES = pa.schema(
         ("stop_reason", pa.string()),
         ("verdict", pa.float64()),  # null on error
         ("extracted", pa.string()),
-        ("failure_kind", pa.string()),  # null|truncation|empty|parse|wrong_answer|error
+        ("failure_kind", pa.string()),  # null|truncation|empty|parse|failed|wrong_answer|error
         ("grade_note", pa.string()),
         ("error", pa.string()),
         ("est_cost_usd", pa.float64()),
@@ -139,6 +140,19 @@ class Store:
         return rows
 
     def put_run(self, run: dict) -> None:
+        label, study = run.get("label"), run.get("study")
+        if label:
+            clashes = [
+                r["run_id"]
+                for r in self.runs(study)
+                if r.get("label") == label and r["run_id"] != run["run_id"]
+            ]
+            if clashes:
+                warnings.warn(
+                    f"study {study!r} already has label {label!r} on {clashes}; "
+                    f"address runs by study/label or run id instead",
+                    stacklevel=2,
+                )
         _write_json(run, self._dir("runs") / f"{run['run_id']}.json")
 
     def runs(self, study: str | None = None) -> list[dict]:
@@ -146,6 +160,62 @@ class Store:
             json.loads(f.read_text()) for f in sorted((self.path / "runs").glob("*.json"))
         ]
         return [r for r in runs if study is None or r.get("study") == study]
+
+    def resolve_run(self, ref: str) -> dict:
+        """Address a run by id, unique id prefix, 'study/label', or unique label.
+
+        The id is a config fingerprint (content-addressed, reproducible); labels
+        are the human handle. Resolution order keeps the unambiguous forms
+        first so only a bare colliding label can be ambiguous.
+        """
+        runs = self.runs()
+        if (hit := next((r for r in runs if r["run_id"] == ref), None)) is not None:
+            return hit
+        if "/" in ref:
+            study, _, label = ref.partition("/")
+            hits = [r for r in runs if r.get("study") == study and r.get("label") == label]
+            if len(hits) == 1:
+                return hits[0]
+            if hits:
+                raise LookupError(self._ambiguous(ref, hits))
+        if len(ref) >= 4:
+            hits = [r for r in runs if r["run_id"].startswith(ref)]
+            if len(hits) == 1:
+                return hits[0]
+            if len(hits) > 1:
+                raise LookupError(self._ambiguous(ref, hits))
+        hits = [r for r in runs if r.get("label") == ref]
+        if len(hits) == 1:
+            return hits[0]
+        if hits:
+            raise LookupError(self._ambiguous(ref, hits))
+        raise LookupError(f"no run matches {ref!r}")
+
+    def resolve_row(self, manifest_hash: str, ref: str) -> dict:
+        """Address a manifest row by row_id or unique prefix (of the id or
+        its hash suffix after the benchmark colon)."""
+        rows = self.manifest_rows(manifest_hash)
+        hits = [
+            r
+            for r in rows
+            if r["row_id"] == ref
+            or r["row_id"].startswith(ref)
+            or r["row_id"].rsplit(":", 1)[-1].startswith(ref)
+        ]
+        if len(hits) == 1:
+            return hits[0]
+        if hits:
+            raise LookupError(
+                f"ambiguous row ref {ref!r}: " + ", ".join(r["row_id"] for r in hits)
+            )
+        raise LookupError(f"no row matches {ref!r}")
+
+    @staticmethod
+    def _ambiguous(ref: str, hits: list[dict]) -> str:
+        cand = ", ".join(
+            f"{h['run_id']} ({h.get('study') or '-'}/{h.get('label') or '-'})" for h in hits
+        )
+        return f"ambiguous run ref {ref!r}: {cand}"
 
     def put_samples(self, run_id: str, rows: list[dict]) -> None:
         _merge_write(self._dir("samples") / f"{run_id}.parquet", SAMPLES, rows, ("row_id", "sample_idx"))

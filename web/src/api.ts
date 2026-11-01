@@ -32,6 +32,8 @@ export interface Flip {
   p_b: number;
   kind: "regression" | "gain";
   hard: boolean;
+  // truncated question text (newer servers); null on old stores
+  q?: string | null;
 }
 
 export interface PairReport {
@@ -66,6 +68,7 @@ export interface PairReport {
     p_a: number | null;
     p_b: number | null;
     cell: "both_right" | "both_wrong" | "a_only" | "b_only" | "excluded";
+    q?: string | null;
   }[];
   failure_rows_b?: Record<string, string[]>;
   passn?: Record<
@@ -103,6 +106,8 @@ export interface RowSample {
   verdict: number | null;
   extracted: string | null;
   failure_kind: string | null;
+  // what the grader reported — the "why" for custom graders and judges
+  grade_note?: string | null;
   // decoded generation before the final message; null when token_ids are absent
   thinking?: string | null;
   // text with renderer control tokens stripped

@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from flipbook.config import RunConfig, config_fp, run_id
-from flipbook.graders import grade, is_empty_response
+from flipbook.graders import extracts_answer, grade, is_empty_response
 from flipbook.lint import Finding, lint
 from flipbook.manifest import Manifest
 from flipbook.pricing import PRICES, estimate_usd
@@ -103,7 +103,8 @@ def _prompt_ints(renderer, renderer_name: str, messages: list[dict], effort: flo
 
 
 def _failure_kind(
-    verdict: float, extracted: str | None, stop_reason: str, text: str | None
+    verdict: float, extracted: str | None, stop_reason: str, text: str | None,
+    grader_id: str | None = None,
 ) -> str | None:
     # precedence: a correct answer is never a failure, truncation only counts
     # when it caused the failure, and an empty message is not a parse failure
@@ -114,7 +115,12 @@ def _failure_kind(
     if is_empty_response(text):
         return "empty"
     if extracted is None:
-        return "parse"
+        # WHY the grader matters: for extraction graders (boxed, regex…) a
+        # None means nothing parseable was produced; predicate and judge
+        # graders legitimately return extracted=None on a plain wrong answer,
+        # which is "failed" — calling it "parse" mislabels constraint
+        # violations as unparseable output
+        return "parse" if (grader_id is None or extracts_answer(grader_id)) else "failed"
     return "wrong_answer"
 
 
@@ -208,19 +214,28 @@ async def evaluate_async(
     }
     tot_in = sum(len(prompt_ints[r]) for r, miss in todo.items() if miss)
 
-    if forecast:
-        prior = _prior_gen_mean(store, manifest.manifest_hash, cfg.effort)
-        est_gen = int(
-            (prior[0] if prior else GEN_TOKEN_EST.get(round(cfg.effort or 0.0, 2), 1500)) * cells
+    prior = _prior_gen_mean(store, manifest.manifest_hash, cfg.effort)
+    est_gen = int(
+        (prior[0] if prior else GEN_TOKEN_EST.get(round(cfg.effort or 0.0, 2), 1500)) * cells
+    )
+    disc = list_ = None
+    if resolved.base_model in PRICES:
+        disc = estimate_usd(resolved.base_model, "prefill", tot_in) + estimate_usd(
+            resolved.base_model, "sample", est_gen
         )
-        disc = list_ = None
-        if resolved.base_model in PRICES:
-            disc = estimate_usd(resolved.base_model, "prefill", tot_in) + estimate_usd(
-                resolved.base_model, "sample", est_gen
-            )
-            list_ = estimate_usd(resolved.base_model, "prefill", tot_in, list_price=True) + estimate_usd(
-                resolved.base_model, "sample", est_gen, list_price=True
-            )
+        list_ = estimate_usd(resolved.base_model, "prefill", tot_in, list_price=True) + estimate_usd(
+            resolved.base_model, "sample", est_gen, list_price=True
+        )
+    forecast_line = (
+        f"forecast: {cells} cells · {tot_in:,} prompt tok · ~{est_gen:,} gen tok "
+        f"(prior: {'store' if prior else 'table'})"
+        + (
+            f" · ~${disc:.3f} discount · ~${list_:.3f} list"
+            if disc is not None
+            else " · cost: unknown (no price table)"
+        )
+    )
+    if forecast:
         return RunSummary(
             run_id=rid,
             manifest_hash=manifest.manifest_hash,
@@ -238,6 +253,10 @@ async def evaluate_async(
                 usd_list=list_,
             ),
         )
+
+    # spend is always announced before the first paid call — the eval prints
+    # this even when the caller didn't ask for a dry run
+    log(forecast_line)
 
     # an injected client skips creating a new one, cfg.model still carries the path for identity and provenance
     client = sampling_client or (
@@ -289,7 +308,7 @@ async def evaluate_async(
                     "run_id": rid, "row_id": row["row_id"], "sample_idx": i,
                     "text": text, "prompt_tokens": len(toks), "gen_tokens": len(seq.tokens),
                     "stop_reason": seq.stop_reason, "verdict": verdict,
-                    "extracted": extracted, "failure_kind": _failure_kind(verdict, extracted, seq.stop_reason, text),
+                    "extracted": extracted, "failure_kind": _failure_kind(verdict, extracted, seq.stop_reason, text, row["grader_id"]),
                     "grade_note": note, "error": None, "est_cost_usd": est,
                     "token_ids": list(seq.tokens), "token_logprobs": list(seq.logprobs) if seq.logprobs else None,
                 }
@@ -313,7 +332,10 @@ async def evaluate_async(
         {
             "run_id": rid, "config_fp": config_fp(cfg), "created_at": datetime.now(UTC).isoformat(),
             "manifest_hash": manifest.manifest_hash, "study": cfg.study, "source": "eval",
-            "label": cfg.label, "model_id": resolved.base_model,
+            # unlabeled runs still get an addressable name: tail of
+            # "org/Model" or "tinker://…/weights_name" (Store.resolve_run)
+            "label": cfg.label or cfg.model.rsplit("/", 1)[-1],
+            "model_id": resolved.base_model,
             "checkpoint_path": resolved.checkpoint_path,
             "base_model": resolved.base_model if resolved.checkpoint_path else None,
             "train_step": _train_step(resolved.checkpoint_path),

@@ -183,11 +183,27 @@ def compare(store: Store, run_a: str, run_b: str) -> PairReport:
         "both_right": int((ma & mb).sum()), "both_wrong": int((~ma & ~mb).sum()),
         "a_only": int((ma & ~mb).sum()), "b_only": int((~ma & mb).sum()),
     }
+    # truncated question text per row, so flip lines and grid tooltips carry
+    # the prompt instead of a bare hash
+    q_by_row: dict[str, str] = {}
+    mh = runs.get(run_a, {}).get("manifest_hash")
+    if mh:
+        try:
+            from flipbook.manifest import question_text
+
+            q_by_row = {
+                r["row_id"]: question_text(r["messages"]).replace("\n", " ")[:80]
+                for r in store.manifest_rows(mh)
+            }
+        except FileNotFoundError:
+            pass
+
     flips = [
         {
             "row_id": r, "p_a": float(x), "p_b": float(y),
             "kind": "regression" if x - y >= FLIP_DELTA else "gain",
             "hard": (x, y) in ((1.0, 0.0), (0.0, 1.0)),
+            "q": q_by_row.get(r),
         }
         for r, x, y in zip(common, pa_v, pb_v)
         if abs(float(y) - float(x)) >= FLIP_DELTA
@@ -216,11 +232,13 @@ def compare(store: Store, run_a: str, run_b: str) -> PairReport:
                 else "b_only" if b_ok
                 else "both_wrong"
             ),
+            "q": q_by_row.get(r),
         }
         for r, x, y, a_ok, b_ok in zip(common, pa_v, pb_v, ma, mb)
     ]
     cells += [
-        {"row_id": e["row_id"], "p_a": None, "p_b": None, "cell": "excluded"}
+        {"row_id": e["row_id"], "p_a": None, "p_b": None, "cell": "excluded",
+         "q": q_by_row.get(e["row_id"])}
         for e in excluded
     ]
     cells.sort(key=lambda c: c["row_id"])

@@ -125,7 +125,7 @@ def test_compare_row_thinking_and_text_clean(tmp_path, monkeypatch):
         def decode(self, ids):
             return "<|content_thinking|>let me think<|message_model|><|x|>final answer"
 
-    monkeypatch.setattr("flipbook.api._tokenizer", lambda _m: _Fake())
+    monkeypatch.setattr("flipbook.decode.tokenizer", lambda _m: _Fake())
     c = _client(tmp_path)
     d = c.get("/api/compare/row", params={"a": "a", "b": "b", "row": "r1"}).json()
     assert d["k_a"] == 2 and d["k_b"] == 1

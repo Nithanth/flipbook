@@ -6,13 +6,15 @@ import argparse
 import asyncio
 import json
 import sys
+import textwrap
 
 from flipbook.budget import budget
 from flipbook.config import RunConfig
 from flipbook.diverge import diverge
 from flipbook.effort import effort_gap
+from flipbook.graders import strip_control_tokens
 from flipbook.lint import lint
-from flipbook.manifest import Manifest
+from flipbook.manifest import Manifest, question_text
 from flipbook.runner import LintFailed, evaluate, resolve_model
 from flipbook.stats import compare, gate
 from flipbook.store import Store
@@ -22,13 +24,26 @@ def _store(args) -> Store:
     return Store(args.store)
 
 
+def _run_rec(store: Store, ref: str) -> dict:
+    """CLI surface for Store.resolve_run — a bad ref is a usage error."""
+    try:
+        return store.resolve_run(ref)
+    except LookupError as e:
+        raise SystemExit(str(e)) from e
+
+
+def _run_id(store: Store, ref: str) -> str:
+    return _run_rec(store, ref)["run_id"]
+
+
 def _add_store(p: argparse.ArgumentParser) -> None:
     p.add_argument("--store", default="./flipbook_store")
 
 
-def _add_eval_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--model", required=True)
-    p.add_argument("--manifest", required=True)
+def _add_eval_args(p: argparse.ArgumentParser, required: bool = True) -> None:
+    # lint --run reads model/manifest off the stored run record instead
+    p.add_argument("--model", required=required)
+    p.add_argument("--manifest", required=required)
     p.add_argument("--effort", type=float, default=None)
     p.add_argument("--k", type=int, default=4)
     p.add_argument("--temperature", type=float, default=0.7)
@@ -88,10 +103,17 @@ def _print_findings(findings) -> int:
     return 2 if any(f.level == "error" for f in findings) else 0
 
 
+_RUN_REF_EPILOG = "run refs: run_id, unique id prefix, 'study/label', or a unique label"
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="flipbook")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser("freeze", help="freeze a benchmark subset into a manifest")
+    p = sub.add_parser(
+        "freeze", help="freeze a benchmark subset into a manifest",
+        epilog="--from-jsonl rows: {'question'|'messages', 'gold', 'grader_id'} — "
+               "graders: builtins, 'regex:<pat>', 'module.path:fn', or 'path/file.py:fn'",
+    )
     p.add_argument("--benchmark", action="append", required=True,
                    help="name:n, repeatable; with --from-jsonl, a single bare name")
     p.add_argument("--from-jsonl", default=None,
@@ -108,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--run")
     src.add_argument("--config", action="store_true")
-    _add_eval_args(p)
+    _add_eval_args(p, required=False)
     _add_store(p)
     p = sub.add_parser("graders", help="list registered grader ids")
     p = sub.add_parser("grade", help="dry-run a grader on one text")
@@ -118,10 +140,17 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("runs", help="list runs in the store")
     p.add_argument("--study")
     _add_store(p)
-    p = sub.add_parser("budget", help="token/cost distribution for a run")
+    p = sub.add_parser("budget", help="token/cost distribution for a run", epilog=_RUN_REF_EPILOG)
     p.add_argument("run")
     _add_store(p)
-    p = sub.add_parser("compare", help="paired stats between two runs")
+    p = sub.add_parser("show", help="inspect one row's samples in a run", epilog=_RUN_REF_EPILOG)
+    p.add_argument("run", help="run id, prefix, study/label, or label")
+    p.add_argument("row", help="row id or unique prefix (of id or hash suffix)")
+    p.add_argument("--sample", type=int, default=None, help="only this sample index")
+    p.add_argument("--full", action="store_true", help="print full text, not the tail")
+    p.add_argument("--thinking", action="store_true", help="decode thinking from token_ids")
+    _add_store(p)
+    p = sub.add_parser("compare", help="paired stats between two runs", epilog=_RUN_REF_EPILOG)
     p.add_argument("run_a")
     p.add_argument("run_b")
     p.add_argument("--gate", action="store_true", help="exit 2 on a significant regression")
@@ -130,13 +159,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--json", action="store_true")
     p.add_argument("--markdown", action="store_true")
     _add_store(p)
-    p = sub.add_parser("diverge", help="per-token logprob gap of ckpt vs base on base's traces")
+    p = sub.add_parser("diverge", help="per-token logprob gap of ckpt vs base on base's traces", epilog=_RUN_REF_EPILOG)
     p.add_argument("--base", required=True)
     p.add_argument("--ckpt", required=True)
     p.add_argument("--rows", choices=["flips", "all"], default="all")
     p.add_argument("--forecast", action="store_true")
     _add_store(p)
-    p = sub.add_parser("effort", help="effort-prefix gap for one run's traces")
+    p = sub.add_parser("effort", help="effort-prefix gap for one run's traces", epilog=_RUN_REF_EPILOG)
     p.add_argument("--run", required=True)
     p.add_argument("--pair", required=True, help="e_low,e_high")
     p.add_argument("--forecast", action="store_true")
@@ -214,10 +243,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "lint":
         store = _store(args)
         if args.run:
-            f = store.path / "runs" / f"{args.run}.json"
-            if not f.exists():
-                raise SystemExit(f"no run {args.run!r}")
-            rec = json.loads(f.read_text())
+            try:
+                rec = store.resolve_run(args.run)
+            except LookupError as e:
+                raise SystemExit(str(e)) from e
             cfg = RunConfig(
                 model=rec["checkpoint_path"] or rec["model_id"],
                 manifest_hash=rec["manifest_hash"], effort=rec["effort"],
@@ -228,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
             findings = lint(cfg, rec["model_id"],
                             grader_ids=_grader_ids(store, rec["manifest_hash"]))
         else:
+            if not args.model or not args.manifest:
+                raise SystemExit("lint --config needs --model and --manifest")
             base_model, renderer = asyncio.run(_resolve(args))
             cfg = _build_cfg(args, store, base_model, renderer)
             findings = lint(cfg, base_model, grader_ids=_grader_ids(store, args.manifest))
@@ -252,18 +283,81 @@ def main(argv: list[str] | None = None) -> int:
         store = _store(args)
         step = lambda r: (r.get("train_step")
                           or (r.get("provenance") or {}).get("train_step_measured") or -1)
+        # manifest_hash -> name, so the table shows which eval each run targets
+        mnames = {
+            d["manifest_hash"]: d["name"]
+            for d in (
+                json.loads(f.read_text())
+                for f in sorted((store.path / "manifests").glob("*.json"))
+            )
+        }
+        print(f"{'run':<12}  {'label':<12} {'study':<12} {'manifest':<14} "
+              f"{'effort':<6} {'k':<3} {'model'}")
         for r in sorted(store.runs(args.study),
                         key=lambda x: (x.get("study") or "", step(x))):
             label = r.get("label") or "-"
-            print(f"{r['run_id'][:12]}  {label:<10} {r.get('study') or '-':<14} "
-                  f"effort={r.get('effort')} k={r.get('k')} {r.get('model_id') or ''}")
+            print(f"{r['run_id'][:12]}  {label:<12} {(r.get('study') or '-'):<12} "
+                  f"{mnames.get(r.get('manifest_hash'), (r.get('manifest_hash') or '-')[:12]):<14} "
+                  f"{r.get('effort')!s:<6} {r.get('k')!s:<3} {r.get('model_id') or ''}")
+        return 0
+    if args.cmd == "show":
+        store = _store(args)
+        rec = _run_rec(store, args.run)
+        try:
+            row = store.resolve_row(rec["manifest_hash"], args.row)
+        except LookupError as e:
+            raise SystemExit(str(e)) from e
+        print(f"run {rec['run_id']}  ({rec.get('study') or '-'}/{rec.get('label') or '-'})")
+        print(textwrap.fill("Q: " + question_text(row["messages"]), 100))
+        print(f"gold: {row['gold']!r}   grader: {row['grader_id']}")
+        from flipbook.decode import thinking
+
+        tbl = store.samples(rec["run_id"])
+        samples = sorted(
+            (r for r in tbl.to_pylist() if r["row_id"] == row["row_id"]),
+            key=lambda r: r["sample_idx"],
+        )
+        if not samples:
+            print("  (no samples for this row)")
+        for s in samples:
+            if args.sample is not None and s["sample_idx"] != args.sample:
+                continue
+            v = s["verdict"]
+            badge = "✓" if v == 1.0 else ("✗" if v == 0.0 else (f"{v:.2f}" if v is not None else "err"))
+            bits = [f"s{s['sample_idx']} {badge}", f"{s['gen_tokens'] or 0} tok",
+                    f"stop={s['stop_reason'] or '-'}"]
+            if s["extracted"] is not None:
+                bits.append(f"extracted={s['extracted'][:40]!r}")
+            if s["failure_kind"]:
+                bits.append(f"failure={s['failure_kind']}")
+            if s["grade_note"]:
+                bits.append(f"note={s['grade_note'][:60]!r}")
+            if s["error"]:
+                bits.append(f"error={s['error'][:60]!r}")
+            print("  " + "  ·  ".join(bits))
+            if args.thinking:
+                think = thinking(rec.get("model_id"), s.get("token_ids"), s.get("text"))
+                if think:
+                    print(textwrap.indent(think, "    thinking: "))
+            text = strip_control_tokens(s["text"] or "").strip()
+            if args.full:
+                if text:
+                    print(textwrap.indent(text, "    "))
+            elif len(text) > 400:
+                print(textwrap.indent("…" + text[-400:], "    "))
+            elif text:
+                print(textwrap.indent(text, "    "))
         return 0
     if args.cmd == "budget":
-        b = budget(_store(args), args.run)
+        store = _store(args)
+        b = budget(store, _run_id(store, args.run))
         print(json.dumps(b.__dict__, indent=2))
         return 0
     if args.cmd == "compare":
-        pair = compare(_store(args), args.run_a, args.run_b)
+        store = _store(args)
+        pair = compare(
+            store, _run_id(store, args.run_a), _run_id(store, args.run_b)
+        )
         compat = pair.comparability
         if compat.get("blocks"):
             for msg in compat["blocks"]:
@@ -271,11 +365,14 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         for msg in compat.get("warnings", []):
             print(f"warning: {msg}", file=sys.stderr)
+        kind_by_row = {
+            rid: k for k, rids in pair.failure_rows_b.items() for rid in rids
+        }
         if args.json:
             print(json.dumps(pair.to_dict(), indent=2))
         elif args.markdown:
             a = pair.agreement
-            print(f"| | {args.run_a} | {args.run_b} |\n|---|---|---|")
+            print(f"| | {pair.run_a} | {pair.run_b} |\n|---|---|---|")
             print(f"| acc | {pair.acc_a:.3f} | {pair.acc_b:.3f} |")
             print(f"| delta | — | {pair.delta:+.3f} "
                   f"[{pair.delta_ci[0]:+.3f}, {pair.delta_ci[1]:+.3f}] |")
@@ -285,8 +382,9 @@ def main(argv: list[str] | None = None) -> int:
                   f"| a_only {a['a_only']} b_only {a['b_only']} |")
             print(f"\n{pair.n_pairs} paired rows, {len(pair.excluded)} excluded")
             for f in pair.flips:
+                q = f" — {f['q']}" if f.get("q") else ""
                 print(f"- {'**HARD** ' if f['hard'] else ''}{f['kind']}: "
-                      f"`{f['row_id']}` {f['p_a']:.2f} → {f['p_b']:.2f}")
+                      f"`{f['row_id']}` {f['p_a']:.2f} → {f['p_b']:.2f}{q}")
         else:
             a = pair.agreement
             print(f"{pair.run_a} acc={pair.acc_a:.3f}  vs  {pair.run_b} acc={pair.acc_b:.3f}")
@@ -297,12 +395,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"flips: {len(pair.flips)}  "
                   f"truncation {pair.truncation_rate_a:.2f} → {pair.truncation_rate_b:.2f}  "
                   f"cost ${pair.cost_a:.3f} vs ${pair.cost_b:.3f}")
+            fk = lambda d: ", ".join(f"{k}×{v}" for k, v in sorted(d.items())) or "none"
+            print(f"failure kinds: a: {fk(pair.failures['a'])}   b: {fk(pair.failures['b'])}")
             for n in sorted(pair.passn, key=int):
                 e = pair.passn[n]
                 print(f"  pass@{n} {e['a']:.3f} → {e['b']:.3f}")
             for f in pair.flips:
                 tag = "HARD " if f["hard"] else ""
-                print(f"  {tag}{f['kind']}: {f['row_id']}  {f['p_a']:.2f} → {f['p_b']:.2f}")
+                kind = kind_by_row.get(f["row_id"])
+                tail = f"  b:{kind}" if kind else ""
+                q = f"  {f['q']!r}" if f.get("q") else ""
+                print(f"  {tag}{f['kind']}: {f['row_id']}  {f['p_a']:.2f} → {f['p_b']:.2f}{tail}{q}")
             for e in pair.excluded:
                 print(f"  excluded {e['row_id']}: {e['reason']}")
         if args.gate:
@@ -313,11 +416,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "diverge":
         store = _store(args)
+        base, ckpt = _run_id(store, args.base), _run_id(store, args.ckpt)
         rows = None
         if args.rows == "flips":
-            pair = compare(store, args.base, args.ckpt)
+            pair = compare(store, base, ckpt)
             rows = [f["row_id"] for f in pair.flips]
-        s = diverge(store, args.base, args.ckpt, rows, forecast=args.forecast)
+        s = diverge(store, base, ckpt, rows, forecast=args.forecast)
         if args.forecast:
             print(f"forecast: {s.n_rows} rows · ~{s.forecast['prefill_tokens']:,} prefill tok "
                   f"· ~${s.est_cost_usd or 0:.3f} discount · ~${s.forecast['usd_list'] or 0:.3f} list")
@@ -327,8 +431,9 @@ def main(argv: list[str] | None = None) -> int:
               f"p_skip {s.mean_p_skip_base:.3f} → {s.mean_p_skip_ckpt:.3f} · ~${s.est_cost_usd or 0:.4f}")
         return 0
     if args.cmd == "effort":
+        store = _store(args)
         e_low, e_high = (float(x) for x in args.pair.split(","))
-        s = effort_gap(_store(args), args.run, e_low, e_high, forecast=args.forecast)
+        s = effort_gap(store, _run_id(store, args.run), e_low, e_high, forecast=args.forecast)
         if args.forecast:
             print(f"forecast: {s.n_rows} traces · ~{s.forecast['prefill_tokens']:,} prefill tok "
                   f"· ~${s.est_cost_usd or 0:.3f} discount · ~${s.forecast['usd_list'] or 0:.3f} list")
