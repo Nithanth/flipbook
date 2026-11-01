@@ -2840,6 +2840,7 @@ name = "tinker-flipbook"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "chz" },
     { name = "duckdb" },
     { name = "fastapi" },
     { name = "math-verify" },
@@ -2855,7 +2856,7 @@ dependencies = [
     { name = "uvicorn" },
 ]
 
-[package.optional-dependencies]
+[package.dev-dependencies]
 dev = [
     { name = "httpx" },
     { name = "ipykernel" },
@@ -2865,17 +2866,14 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "chz", specifier = "==0.4.0" },
     { name = "duckdb", specifier = "==1.5.5" },
     { name = "fastapi", specifier = "==0.142.2" },
-    { name = "httpx", marker = "extra == 'dev'", specifier = "==0.28.1" },
-    { name = "ipykernel", marker = "extra == 'dev'", specifier = "==7.3.0" },
     { name = "math-verify", specifier = "==0.9.0" },
     { name = "numpy", specifier = "==2.5.3" },
     { name = "pyarrow", specifier = "==25.0.1" },
     { name = "pydantic", specifier = ">=2,<3" },
     { name = "pylatexenc", specifier = "==2.11" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = "==9.1.1" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.16.8" },
     { name = "sympy", specifier = "==1.14.0" },
     { name = "tinker", specifier = "==0.30.3" },
     { name = "tinker-cookbook", specifier = "==0.5.7" },
@@ -2883,7 +2881,14 @@ requires-dist = [
     { name = "torch", specifier = "==2.14.0" },
     { name = "uvicorn", specifier = "==0.54.0" },
 ]
-provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "httpx", specifier = "==0.28.1" },
+    { name = "ipykernel", specifier = "==7.3.0" },
+    { name = "pytest", specifier = "==9.1.1" },
+    { name = "ruff", specifier = "==0.16.8" },
+]
 
 [[package]]
 name = "tml-renderers"

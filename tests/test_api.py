@@ -100,3 +100,25 @@ def test_metrics_and_budget(tmp_path):
     b = c.get("/api/budget/a").json()
     assert b["n_samples"] == 4 and b["gen_p50"] == 50.0
     assert c.get("/api/metrics", params={"study": "nope"}).status_code == 404
+
+
+def test_study_detail(tmp_path):
+    store = _store(tmp_path)
+    store.put_run({"run_id": "s1a", "study": "s1",
+                   "provenance": {"train_step_measured": 8}})
+    store.put_run({"run_id": "s1b", "study": "s1", "label": "baseline"})
+    c = _client(tmp_path)
+    d = c.get("/api/studies/s1").json()
+    assert [r["run_id"] for r in d["runs"]] == ["s1b", "s1a"]
+    assert d["runs"][1]["train_step"] == 8  # lifted from provenance
+    assert d["metrics"]["loss"] == [{"step": 8, "value": 0.5}]
+    assert d["effort_gap"] == {"a": 20.0}
+    # a study with runs but no imported metrics still shows up
+    assert c.get("/api/studies/nope").status_code == 404
+
+
+def test_studies_union(tmp_path):
+    store = _store(tmp_path)
+    store.put_run({"run_id": "orphan", "study": "no_metrics"})
+    c = _client(tmp_path)
+    assert set(c.get("/api/studies").json()) == {"s1", "no_metrics"}

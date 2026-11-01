@@ -11,6 +11,7 @@ license = { text = "MIT" }
 dependencies = [
     "tinker==0.30.3",
     "tinker-cookbook==0.5.7",
+    "chz==0.4.0",
     "tml-renderers==0.1.0",
     "torch==2.14.0",
     "pydantic>=2,<3",
@@ -27,7 +28,10 @@ dependencies = [
 [project.scripts]
 flipbook = "flipbook.cli:main"
 
-[project.optional-dependencies]
+# WHY dependency-groups, not optional-dependencies: uv sync installs the
+# dev group by default; optional extras get pruned and pytest falls back
+# to the system interpreter.
+[dependency-groups]
 dev = [
     "ipykernel==7.3.0",
     "pytest==9.1.1",

@@ -95,6 +95,9 @@ def main(argv: list[str] | None = None) -> int:
     src.add_argument("--config", action="store_true")
     _add_eval_args(p)
     _add_store(p)
+    p = sub.add_parser("runs", help="list runs in the store")
+    p.add_argument("--study")
+    _add_store(p)
     p = sub.add_parser("budget", help="token/cost distribution for a run")
     p.add_argument("run")
     _add_store(p)
@@ -201,6 +204,16 @@ def main(argv: list[str] | None = None) -> int:
             cfg = _build_cfg(args, store, base_model, renderer)
             findings = lint(cfg, base_model)
         return _print_findings(findings) if findings else 0
+    if args.cmd == "runs":
+        store = _store(args)
+        step = lambda r: (r.get("train_step")
+                          or (r.get("provenance") or {}).get("train_step_measured") or -1)
+        for r in sorted(store.runs(args.study),
+                        key=lambda x: (x.get("study") or "", step(x))):
+            label = r.get("label") or "-"
+            print(f"{r['run_id'][:12]}  {label:<10} {r.get('study') or '-':<14} "
+                  f"effort={r.get('effort')} k={r.get('k')} {r.get('model_id') or ''}")
+        return 0
     if args.cmd == "budget":
         b = budget(_store(args), args.run)
         print(json.dumps(b.__dict__, indent=2))
