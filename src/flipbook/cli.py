@@ -431,7 +431,7 @@ workflow
   1. freeze    build a manifest: frozen questions + golds + grader_ids
   2. eval      sample a model over it (a spend forecast prints first);
                `flipbook eval sft/final` resolves a study checkpoint ref
-  +. train     `flipbook train` = the SFT recipe with in-loop evals
+  +. train     `flipbook train sft|rl` = a recipe with in-loop evals
   3. compare   paired stats and flips between two runs
   4. diverge   per-token logprob gap of a checkpoint on base traces
   5. serve     read-only API + browser UI over the store
@@ -637,9 +637,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--study", required=True)
     _add_store(p)
     p = Sub("train",
-            help="run the SFT training recipe (scripts/train_demo.py): "
-                 "`train data` builds the jsonl, `train train --study S --manifest M` "
-                 "trains with in-loop checkpoint evals; `train train --help` lists knobs")
+            help="run a training recipe with in-loop checkpoint evals. "
+                 "`train sft data` builds the jsonl, `train sft train --study S --manifest M` "
+                 "runs SFT (scripts/train_demo.py); `train rl --env gsm8k --study S --manifest M` "
+                 "runs RL (scripts/train_rl.py). `--help` after either lists knobs")
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = Sub("doctor", help="first-run checklist: secrets, store, gui build, completion")
     _add_store(p)
@@ -1100,14 +1101,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"imported {n} metric rows for study {args.study}")
         return 0
     if args.cmd == "train":
-        script = Path(__file__).resolve().parent.parent.parent / "scripts" / "train_demo.py"
+        # `train rl ...` -> train_rl.py; anything else -> train_demo.py (sft)
+        rest = list(args.rest)
+        recipe = "train_rl.py" if rest[:1] == ["rl"] else "train_demo.py"
+        if rest[:1] in (["rl"], ["sft"]):
+            rest = rest[1:]
+        script = Path(__file__).resolve().parent.parent.parent / "scripts" / recipe
         if not script.exists():
-            raise SystemExit("training recipe not found at scripts/train_demo.py - run from the repo root")
+            raise SystemExit(f"training recipe not found at scripts/{recipe} - run from the repo root")
         import subprocess
-        rc = subprocess.call([sys.executable, str(script), *args.rest])
+        rc = subprocess.call([sys.executable, str(script), *rest])
         if rc == 0:
             print("\ninspect the trajectory: flipbook serve  ->  #/study")
-        raise SystemExit(rc)
+        raise SystemExit(0 if rc == 3 else rc)  # 3 = recipe dry run, not a failure
     if args.cmd == "doctor":
         return _doctor(args)
     if args.cmd == "serve":

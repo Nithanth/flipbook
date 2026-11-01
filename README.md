@@ -3,8 +3,8 @@
 Regression analysis for [Tinker](https://thinkingmachines.ai/tinker/) fine-tuning runs.
 You freeze an eval set, sample each checkpoint against it, and flipbook tells
 you which examples got better, which got worse, what it cost, and where in the
-output the model's behavior changed. A checkpoint can improve on its objective every 
-step while breaking on everything else, and nothing in the loop will tell you. Per-example 
+output the model's behavior changed. A checkpoint can improve on its objective every
+step while breaking on everything else, and nothing in the loop will tell you. Per-example
 evals can diagnose this in flight.
 
 ## Try it without a key
@@ -63,19 +63,22 @@ flipbook eval --model thinkingmachines/Inkling-Small --manifest aime30 \
     --effort 0.9 --k 2 --study myrun --label baseline
 ```
 
-**3. Train with evals in the loop.** `flipbook train` runs the included SFT
-recipe (`scripts/train_demo.py`) and evaluates every saved checkpoint into the
-same study. For your own cookbook training loop, point `flipbook track <log dir>`
-at it afterward, or add the evaluator from `flipbook.evaluator` to your config.
+**3. Train with evals in the loop.** `flipbook train` runs an included recipe
+(SFT in `scripts/train_demo.py`, RL in `scripts/train_rl.py`) and evaluates
+every saved checkpoint into the same study. Both print a cost forecast and
+stop unless you pass `--yes`. For your own cookbook training loop, point
+`flipbook track <log dir>` at it afterward, or add `RegressionEvaluator` from
+`flipbook.evaluator` to your config's evaluator builders.
 
 ```bash
-flipbook train data                                        # writes data/gsm8k_sft.jsonl
-flipbook train train --study myrun --manifest aime30       # trains, evals each checkpoint into the study
+flipbook train sft data                                    # writes data/gsm8k_sft.jsonl
+flipbook train sft train --study myrun --manifest aime30   # SFT; evals each checkpoint into the study
+flipbook train rl --env gsm8k --study myrl --manifest aime30   # RL with verifiable math reward
 flipbook eval myrun/final          # refs resolve checkpoint paths and inherit the study's settings
 ```
 
-`flipbook train train --help` lists the recipe's knobs (model, LoRA rank,
-epochs, eval cadence).
+`flipbook train sft train --help` and `flipbook train rl --help` list each
+recipe's knobs.
 
 **4. Look at what changed.**
 

@@ -132,8 +132,8 @@ def run_train(args) -> int:
     print(f"forecast ~${cost:.2f} training + {n_evals} in-loop eval points "
           f"(30 rows x k={args.k} each, priced separately by flipbook)")
     if not args.yes:
-        print("dry run — pass --yes to train")
-        return 0
+        print("dry run: pass --yes to train")
+        return 3  # distinct from success so the CLI wrapper skips the "inspect" hint
     cli_utils.check_log_dir(config.log_path, behavior_if_exists="raise")
     asyncio.run(train.main(config))
     return 0
