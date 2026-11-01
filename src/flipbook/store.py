@@ -3,7 +3,6 @@
 Writes are tmp+rename atomic, a reader sees old or new, never torn.
 """
 
-from __future__ import annotations
 
 import json
 import os
@@ -78,6 +77,15 @@ EFFORT = pa.schema(
         ("gap_nats", pa.float64()),
         ("n", pa.int32()),
         ("cost_usd", pa.float64()),
+    ]
+)
+
+TRAINING_METRICS = pa.schema(
+    [
+        ("study", pa.string()),
+        ("step", pa.int64()),
+        ("key", pa.string()),
+        ("value", pa.float64()),
     ]
 )
 
@@ -161,6 +169,16 @@ class Store:
     def effort(self, run_id: str, e_low: float, e_high: float) -> pa.Table:
         f = self.path / "effort" / f"{run_id}__{e_low}_{e_high}.parquet"
         return pq.read_table(f) if f.exists() else EFFORT.empty_table()
+
+    def put_training_metrics(self, study: str, records: list[dict]) -> None:
+        _merge_write(
+            self._dir("training_metrics") / f"{study}.parquet",
+            TRAINING_METRICS, records, ("step", "key"),
+        )
+
+    def training_metrics(self, study: str) -> pa.Table:
+        f = self.path / "training_metrics" / f"{study}.parquet"
+        return pq.read_table(f) if f.exists() else TRAINING_METRICS.empty_table()
 
     def has(self, run_id: str, row_id: str, sample_idx: int) -> bool:
         f = self.path / "samples" / f"{run_id}.parquet"
