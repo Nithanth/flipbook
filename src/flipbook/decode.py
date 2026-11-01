@@ -22,7 +22,13 @@ def thinking(model_id: str | None, token_ids: list | None, text: str | None) -> 
     """Decoded generation preceding the stored final message, or None."""
     if not model_id or not token_ids or not text:
         return None
-    full = tokenizer(model_id).decode([int(i) for i in token_ids])
+    try:
+        tok = tokenizer(model_id)
+    except OSError:
+        # WHY tolerate: model_id can be a tinker:// ref or a name HF can't
+        # resolve; the trace is inspectable without the thinking preamble
+        return None
+    full = tok.decode([int(i) for i in token_ids])
     # WHY a 40-char prefix: the stored text may be whitespace-trimmed relative
     # to the decode, so an exact full-string find can miss
     offset = full.find(text[:40])

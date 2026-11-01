@@ -281,7 +281,10 @@ def create_app(store_path: str | Path) -> FastAPI:
         model_id = run.get("model_id") or run.get("model")
         if not model_id:
             raise HTTPException(404, f"no model recorded on run {base}")
-        tok = _tokenizer(model_id)
+        try:
+            tok = _tokenizer(model_id)
+        except OSError:
+            raise HTTPException(404, f"no tokenizer available for {model_id}")
         return {
             "tokens": [
                 {"t": tok.decode([int(i)]), "d": d}
@@ -344,6 +347,9 @@ def create_app(store_path: str | Path) -> FastAPI:
         base = next((r for r in sruns if r.get("train_step") is None), None)
         charted = {p["step"] for k, v in metrics.items() if k.endswith("/pass1") for p in v}
         if base:
+            # the baseline itself has no train_step, so nothing above charts it:
+            # borrow its side of the first live pair as the step-0 point
+            base_pair = None
             for r in sruns:
                 st = r.get("train_step")
                 if (st is None or st in charted or r["run_id"] == base["run_id"]
@@ -352,6 +358,8 @@ def create_app(store_path: str | Path) -> FastAPI:
                 pair = _compare_live(base["run_id"], r["run_id"])
                 if not pair["n_pairs"]:
                     continue
+                if base_pair is None and 0 not in charted:
+                    base_pair = pair
                 stats = {
                     "pass1": pair["acc_b"], "delta_vs_base": pair["delta"],
                     "delta_ci_lo": pair["delta_ci"][0], "delta_ci_hi": pair["delta_ci"][1],
@@ -367,6 +375,19 @@ def create_app(store_path: str | Path) -> FastAPI:
                     metrics.setdefault(f"eval/pass{n}", []).append({"step": st, "value": pv["b"]})
                 for n, pv in (pair.get("scoren") or {}).items():
                     metrics.setdefault(f"eval/score{n}", []).append({"step": st, "value": pv["b"]})
+            if base_pair is not None:
+                stats = {
+                    "pass1": base_pair["acc_a"],
+                    "truncation_rate": base_pair["truncation_rate_a"],
+                    "mean_gen_tokens": base_pair["tokens"]["a"]["mean"],
+                    "cost_usd": base_pair["cost_a"],
+                }
+                for k, v in stats.items():
+                    metrics.setdefault(f"eval/{k}", []).append({"step": 0, "value": v})
+                for n, pv in (base_pair.get("passn") or {}).items():
+                    metrics.setdefault(f"eval/pass{n}", []).append({"step": 0, "value": pv["a"]})
+                for n, pv in (base_pair.get("scoren") or {}).items():
+                    metrics.setdefault(f"eval/score{n}", []).append({"step": 0, "value": pv["a"]})
         # divergence backfills live in their own files, not training_metrics
         divd = store.path / "divergence"
         if divd.exists():

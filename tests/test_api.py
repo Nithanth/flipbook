@@ -237,3 +237,23 @@ def test_load_env_file(tmp_path, monkeypatch):
     assert os.environ["OTHER"] == "q"
     assert os.environ["ALREADY"] == "shell"  # shell wins over file
     assert load_env_file(tmp_path / "missing.env") == []
+
+
+def test_study_charts_baseline_step(tmp_path):
+    # a study with no imported training_metrics still gets a step-0 point
+    # from the baseline's side of a live compare
+    from flipbook.synthetic import seed_synthetic
+
+    seed_synthetic(Store(tmp_path))
+    c = _client(tmp_path)
+    d = c.get("/api/studies/synthetic").json()
+    steps = {p["step"] for p in d["metrics"]["eval/pass1"]}
+    assert steps == {0, 24, 48, 64}
+    step0 = next(p for p in d["metrics"]["eval/pass1"] if p["step"] == 0)
+    assert abs(step0["value"] - 0.95) < 0.01
+
+
+def test_thinking_without_tokenizer():
+    from flipbook.decode import thinking
+
+    assert thinking("synthetic/Nope", [1, 2, 3], "x") is None
