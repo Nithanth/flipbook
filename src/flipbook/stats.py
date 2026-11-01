@@ -5,7 +5,8 @@ excluded row is named with a reason.
 """
 
 
-from dataclasses import asdict, dataclass
+import math
+from dataclasses import asdict, dataclass, field
 
 import numpy as np
 
@@ -36,9 +37,63 @@ class PairReport:
     cost_a: float
     cost_b: float
     failures: dict  # per-run failure_kind counts over non-correct samples
+    # {n: {a, b, delta, delta_ci}} for n in 2..min(k_a, k_b); {} when k<2
+    passn: dict = field(default_factory=dict)
+    # per-row cells for the manifest grid: {row_id, p_a, p_b, cell}, sorted
+    cells: list[dict] = field(default_factory=list)
+    # failure_kind -> sorted row_ids of run-b samples carrying that kind
+    failure_rows_b: dict[str, list[str]] = field(default_factory=dict)
+    # {ok, blocks, warnings, token_views}; {} when a run record is missing
+    comparability: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def _differs(a: dict, b: dict, key: str) -> bool:
+    """Both records carry the key and disagree; older records skip the check."""
+    return a.get(key) is not None and b.get(key) is not None and a[key] != b[key]
+
+
+def comparability(run_a: dict, run_b: dict) -> dict:
+    """{"ok": bool, "blocks": [str], "warnings": [str], "token_views": bool}
+
+    Blocks: no paired rows can exist. Warnings: the pair is valid but the
+    delta means something other than "training changed it".
+    """
+    blocks, warnings = [], []
+    if _differs(run_a, run_b, "manifest_hash"):
+        blocks.append(
+            "runs were evaluated on different manifests "
+            f"(hash {run_a['manifest_hash'][:8]}… vs {run_b['manifest_hash'][:8]}…); "
+            "no paired rows exist"
+        )
+    if _differs(run_a, run_b, "grader_id"):
+        blocks.append(f"runs used different graders ({run_a['grader_id']} vs {run_b['grader_id']})")
+
+    model_key = next((k for k in ("model_id", "base_model") if _differs(run_a, run_b, k)), None)
+    if model_key:
+        warnings.append(
+            f"different base models ({run_a[model_key]} vs {run_b[model_key]}): this is a "
+            "capability comparison, not a training regression — flips mean 'different "
+            "model', not 'training changed it'"
+        )
+    diffs = [
+        f"{k} {run_a[k]} vs {run_b[k]}"
+        for k in ("effort", "temperature", "max_tokens", "seed")
+        if _differs(run_a, run_b, k)
+    ]
+    if diffs:
+        warnings.append("sampling config differs: " + ", ".join(diffs))
+    if _differs(run_a, run_b, "k"):
+        warnings.append(f"k differs ({run_a['k']} vs {run_b['k']}); pass@n limited to min")
+
+    # WHY: renderer-only, not model-aware. Per-token divergence needs a shared
+    # vocabulary, and sibling models (Inkling-Small vs Inkling) share tml_v0,
+    # where the token gap is still meaningful.
+    ra, rb = run_a.get("renderer"), run_b.get("renderer")
+    token_views = ra is not None and ra == rb
+    return {"ok": not blocks, "blocks": blocks, "warnings": warnings, "token_views": token_views}
 
 
 def _pct(v: np.ndarray, q: float) -> float:
@@ -66,10 +121,27 @@ def _per_row(samples: list[dict], k: int) -> tuple[dict[str, dict], dict[str, st
             continue
         rows[rid] = {
             "p": sum(s["verdict"] for s in ok) / len(ok),
+            "c": sum(s["verdict"] for s in ok),
+            "n": len(ok),
             "gen": [s["gen_tokens"] or 0 for s in ok],
             "trunc": sum(s["stop_reason"] == "length" for s in ok) / len(ok),
         }
     return rows, excl
+
+
+def _pass_at(rows: dict[str, dict], n: int) -> np.ndarray:
+    """Unbiased pass@n per row (the Codex estimator): the chance that n
+    samples drawn without replacement contain a correct one."""
+    vals = []
+    for r in rows.values():
+        # verdicts are floats, so c is too — comb() needs ints
+        n_ok, c = r["n"], int(r["c"])
+        if n_ok < n:
+            continue
+        # comb(a, b) = 0 when a < b: c correct of n_ok guarantees a hit
+        miss = math.comb(n_ok - c, n) / math.comb(n_ok, n) if n_ok - c >= n else 0.0
+        vals.append(1.0 - miss)
+    return np.array(vals, dtype=float)
 
 
 def _tok_stats(samples: list[dict]) -> dict:
@@ -84,6 +156,7 @@ def compare(store: Store, run_a: str, run_b: str) -> PairReport:
     sa = store.samples(run_a).to_pylist()
     sb = store.samples(run_b).to_pylist()
     runs = {r["run_id"]: r for r in store.runs()}
+    compat = comparability(runs[run_a], runs[run_b]) if run_a in runs and run_b in runs else {}
     ka = runs.get(run_a, {}).get("k") or max((s["sample_idx"] for s in sa), default=-1) + 1
     kb = runs.get(run_b, {}).get("k") or max((s["sample_idx"] for s in sb), default=-1) + 1
 
@@ -120,11 +193,46 @@ def compare(store: Store, run_a: str, run_b: str) -> PairReport:
         if abs(float(y) - float(x)) >= FLIP_DELTA
     ]
 
+    # pass@n over the paired rows, for every n both runs' k can support
+    passn: dict[str, dict] = {}
+    pa_c = {r: pa[r] for r in common}
+    pb_c = {r: pb[r] for r in common}
+    for n in range(2, min(ka, kb) + 1):
+        a_n, b_n = _pass_at(pa_c, n), _pass_at(pb_c, n)
+        if not len(a_n) or not len(b_n):
+            continue
+        d_n = b_n - a_n
+        passn[str(n)] = {
+            "a": float(a_n.mean()), "b": float(b_n.mean()),
+            "delta": float(d_n.mean()), "delta_ci": _boot_ci(d_n),
+        }
+
+    cells = [
+        {
+            "row_id": r, "p_a": float(x), "p_b": float(y),
+            "cell": (
+                "both_right" if a_ok and b_ok
+                else "a_only" if a_ok
+                else "b_only" if b_ok
+                else "both_wrong"
+            ),
+        }
+        for r, x, y, a_ok, b_ok in zip(common, pa_v, pb_v, ma, mb)
+    ]
+    cells += [
+        {"row_id": e["row_id"], "p_a": None, "p_b": None, "cell": "excluded"}
+        for e in excluded
+    ]
+    cells.sort(key=lambda c: c["row_id"])
+
     fails: dict[str, dict[str, int]] = {"a": {}, "b": {}}
+    fail_rows_b: dict[str, set[str]] = {}
     for key, ss in (("a", sa), ("b", sb)):
         for s in ss:
             if s["failure_kind"]:
                 fails[key][s["failure_kind"]] = fails[key].get(s["failure_kind"], 0) + 1
+                if key == "b":
+                    fail_rows_b.setdefault(s["failure_kind"], set()).add(s["row_id"])
 
     n_a = len(sa) or 1
     n_b = len(sb) or 1
@@ -143,6 +251,10 @@ def compare(store: Store, run_a: str, run_b: str) -> PairReport:
         cost_a=sum(s["est_cost_usd"] or 0 for s in sa),
         cost_b=sum(s["est_cost_usd"] or 0 for s in sb),
         failures=fails,
+        passn=passn,
+        cells=cells,
+        failure_rows_b={k: sorted(v) for k, v in fail_rows_b.items()},
+        comparability=compat,
     )
 
 

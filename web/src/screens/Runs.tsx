@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type Run } from "../api";
+import { runLabel } from "../runLabel";
 
 export default function Runs() {
   const [runs, setRuns] = useState<Run[] | null>(null);
@@ -20,6 +21,7 @@ export default function Runs() {
   return (
     <>
       <h1>runs</h1>
+      <p className="page-sub">every evaluation in the store, grouped by study</p>
       {studies.map((s) => (
         <section key={s}>
           <h2>
@@ -48,7 +50,7 @@ export default function Runs() {
                 .sort((x, y) => (x.train_step ?? -1) - (y.train_step ?? -1))
                 .map((r) => (
                   <tr key={r.run_id}>
-                    <td>{r.label ?? "—"}</td>
+                    <td>{runLabel(r)}</td>
                     <td className="mono">{r.run_id.slice(0, 12)}</td>
                     <td className="mono" title={r.model}>{shortModel(r.model)}</td>
                     <td>{r.effort ?? ""}</td>

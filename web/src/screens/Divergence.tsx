@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
-import { api, type DivergenceRow } from "../api";
+import { api, type DivergenceRow, type Run } from "../api";
 import Tip from "../Tip";
+import { Spark, TraceView } from "../Trace";
+import { runLabel } from "../runLabel";
 
 interface Pair {
   base: string;
@@ -9,19 +11,24 @@ interface Pair {
 
 export default function Divergence() {
   const [pairs, setPairs] = useState<Pair[]>([]);
+  const [runs, setRuns] = useState<Run[]>([]);
   const q = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
   const initial =
     q.get("base") && q.get("ckpt") ? `${q.get("base")}__${q.get("ckpt")}` : "";
   const [sel, setSel] = useState(initial);
   const [rows, setRows] = useState<DivergenceRow[] | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
+    api.runs().then(setRuns);
     api.divergencePairs().then((ps) => {
       setPairs(ps);
       if (ps.length && !sel) setSel(`${ps[0].base}__${ps[0].ckpt}`);
     });
   }, []);
+
+  const label = (id: string) => runLabel(runs.find((x) => x.run_id === id), id);
 
   useEffect(() => {
     if (!sel) return;
@@ -31,9 +38,22 @@ export default function Divergence() {
     api.divergence(base, ckpt).then(setRows).catch((e) => setErr(String(e)));
   }, [sel]);
 
+  // deep link: ?row=…&sample=… opens and scrolls to that sample's row
+  useEffect(() => {
+    if (!rows) return;
+    const row = q.get("row");
+    const sample = q.get("sample");
+    if (row == null || sample == null) return;
+    const key = `${row}:${sample}`;
+    if (!rows.some((r) => `${r.row_id}:${r.sample_idx}` === key)) return;
+    setOpen(key);
+    document.getElementById(`drow-${key}`)?.scrollIntoView();
+  }, [rows]);
+
   return (
     <>
       <h1>divergence</h1>
+      <p className="page-sub">where in the baseline's own reasoning do the two models stop agreeing?</p>
       {pairs.length === 0 ? (
         <p className="sub">
           no divergence data yet — run <code>flipbook diverge --base … --ckpt …</code>
@@ -45,14 +65,19 @@ export default function Divergence() {
             <select value={sel} onChange={(e) => setSel(e.target.value)}>
               {pairs.map((p) => (
                 <option key={`${p.base}__${p.ckpt}`} value={`${p.base}__${p.ckpt}`}>
-                  {p.base.slice(0, 12)} → {p.ckpt.slice(0, 12)}
+                  {label(p.base)} → {label(p.ckpt)}
+                  {p.base === p.ckpt ? " (noise floor)" : ""}
                 </option>
               ))}
             </select>
           </label>
+          <a className="sub" href={`#/compare?a=${sel.split("__")[0]}&b=${sel.split("__")[1]}`}>
+            open in compare →
+          </a>
         </div>
       )}
       {err && <p className="err">{err}</p>}
+      {rows && <PairRead rows={rows} self={sel.split("__")[0] === sel.split("__")[1]} />}
       {rows && (
         <table>
           <thead>
@@ -65,21 +90,56 @@ export default function Divergence() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={`${r.row_id}:${r.sample_idx}`}>
-                <td className="mono">{r.row_id}:{r.sample_idx}</td>
-                <td className={r.sum_nats < 0 ? "neg" : "pos"}>
-                  {r.sum_nats.toFixed(1)}
-                </td>
-                <td>{r.divergence_pos ?? "—"}</td>
-                <td>
-                  {r.p_skip_base.toFixed(3)} → {r.p_skip_ckpt.toFixed(3)}
-                </td>
-                <td>
-                  <Spark delta={r.delta} mark={r.divergence_pos} />
-                </td>
-              </tr>
-            ))}
+            {rows.map((r) => {
+              const short = r.row_id.includes(":")
+                ? r.row_id.split(":").slice(-1)[0]
+                : r.row_id;
+              const key = `${r.row_id}:${r.sample_idx}`;
+              const isOpen = open === key;
+              return [
+                <tr
+                  key={key}
+                  id={`drow-${key}`}
+                  className="fliprow"
+                  onClick={() => setOpen(isOpen ? null : key)}
+                >
+                  <td className="mono">
+                    <Tip text={r.row_id}>{`${short}:${r.sample_idx}`}</Tip>
+                  </td>
+                  <td className={r.sum_nats < 0 ? "neg" : "pos"}>
+                    {r.sum_nats.toFixed(1)}
+                  </td>
+                  <td>{r.divergence_pos ?? "—"}</td>
+                  <td>
+                    {r.p_skip_base.toFixed(3)} → {r.p_skip_ckpt.toFixed(3)}
+                  </td>
+                  <td>
+                    <Spark delta={r.delta} mark={r.divergence_pos} />
+                  </td>
+                </tr>,
+                isOpen && (
+                  <tr key={`${key}-x`}>
+                    <td colSpan={5} className="tracexp">
+                      <TraceView
+                        base={sel.split("__")[0]}
+                        ckpt={sel.split("__")[1]}
+                        row={r.row_id}
+                        sample={r.sample_idx}
+                        delta={r.delta}
+                        mark={r.divergence_pos}
+                      />
+                      <div className="sub">
+                        {r.delta.length.toLocaleString()} tokens · Σ {r.sum_nats.toFixed(1)} nats ·
+                        mean {r.mean_nats.toFixed(4)} nats/token
+                        {r.divergence_pos != null
+                          ? ` · first divergence at token ${r.divergence_pos.toLocaleString()}`
+                          : ""}
+                      </div>
+                    </td>
+                  </tr>
+                ),
+              ];
+            })}
           </tbody>
         </table>
       )}
@@ -87,42 +147,51 @@ export default function Divergence() {
   );
 }
 
-/** Delta sparkline: red = ckpt less confident than base, blue = more. */
-function Spark({ delta, mark }: { delta: number[]; mark: number | null }) {
-  const w = 220;
-  const h = 28;
-  if (!delta.length) return null;
-  const step = Math.max(1, Math.floor(delta.length / w));
-  const pts: number[] = [];
-  for (let i = 0; i < delta.length; i += step) pts.push(delta[i]);
-  const max = Math.max(1e-9, ...pts.map(Math.abs));
-  const bw = w / pts.length;
+/** Pair-level "the read": what the deltas collectively say before you open a row. */
+function PairRead({ rows, self }: { rows: DivergenceRow[]; self: boolean }) {
+  if (!rows.length) return null;
+  const n = rows.length;
+  const med = (xs: number[]) => xs.slice().sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+  const medSum = med(rows.map((r) => r.sum_nats));
+  const fracs = rows
+    .filter((r) => r.divergence_pos != null && r.n)
+    .map((r) => r.divergence_pos! / r.n!);
+  const meanSkipB = rows.reduce((a, r) => a + r.p_skip_base, 0) / n;
+  const meanSkipC = rows.reduce((a, r) => a + r.p_skip_ckpt, 0) / n;
+
+  const bullets: string[] = self
+    ? [
+        "this is the same checkpoint scored twice — the instrument's A/A noise floor. Σ nats near zero and faint traces are expected; anything here is scoring noise, not a policy shift",
+      ]
+    : [
+        `median Σ ${medSum.toFixed(1)} nats across ${n} rows — ${
+          Math.abs(medSum) < 5
+            ? "the checkpoint still finds these baseline traces about as likely as base did"
+            : "the checkpoint assigns these baseline traces substantially different probability"
+        }`,
+      ];
+  if (fracs.length >= 2) {
+    const f = med(fracs);
+    bullets.push(
+      `divergence typically begins ${(f * 100).toFixed(0)}% into the trace — the checkpoint ${
+        f > 0.6 ? "follows the baseline's reasoning before breaking late" : "departs from baseline reasoning early"
+      }`,
+    );
+  }
+  bullets.push(
+    `mean p_skip ${meanSkipB.toFixed(3)} → ${meanSkipC.toFixed(3)} — ${
+      meanSkipC > meanSkipB * 3 && meanSkipC > 0.05
+        ? "the checkpoint increasingly wants to emit nothing"
+        : "no collapse toward empty responses"
+    }`,
+  );
+
   return (
-    <svg width={w} height={h} className="spark">
-      <line x1={0} x2={w} y1={h / 2} y2={h / 2} style={{ stroke: "var(--border)" }} />
-      {pts.map((d, i) => {
-        const bh = (Math.abs(d) / max) * (h / 2);
-        return (
-          <rect
-            key={i}
-            x={i * bw}
-            y={d < 0 ? h / 2 : h / 2 - bh}
-            width={Math.max(1, bw - 0.4)}
-            height={bh}
-            style={{ fill: d < 0 ? "var(--neg)" : "var(--accent)" }}
-          />
-        );
-      })}
-      {mark != null && (
-        <line
-          x1={(mark / delta.length) * w}
-          x2={(mark / delta.length) * w}
-          y1={0}
-          y2={h}
-          style={{ stroke: "var(--warn)" }}
-          strokeWidth={2}
-        />
-      )}
-    </svg>
+    <div className="card read">
+      <div className="mini-label">the read</div>
+      {bullets.map((b) => (
+        <p key={b}>{b}</p>
+      ))}
+    </div>
   );
 }

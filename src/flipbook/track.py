@@ -5,6 +5,7 @@ raw jsonl) and runs the same pipeline the in-loop evaluator would have
 
 
 import asyncio
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,13 +44,24 @@ def _checkpoints(log_dir: str | Path) -> list[dict]:
 
 def _cfg_for(
     model: str, manifest: Manifest, renderer: str, *,
-    effort, k, temperature, max_tokens, seed, study
+    effort, k, temperature, max_tokens, seed, study, label=None
 ) -> RunConfig:
     return RunConfig(
         model=model, manifest_hash=manifest.manifest_hash, effort=effort,
         temperature=temperature, max_tokens=max_tokens, k=k, seed=seed,
-        renderer=renderer, study=study,
+        renderer=renderer, study=study, label=label,
     )
+
+
+def _stamp(store: Store, rid: str, step: int | None, model_path: str) -> None:
+    """The run record knows its weights path; add the measured train step."""
+    f = store.path / "runs" / f"{rid}.json"
+    rec = json.loads(f.read_text())
+    prov = rec.setdefault("provenance", {})
+    prov["model_path"] = model_path
+    if step is not None:
+        prov["train_step_measured"] = step
+    f.write_text(json.dumps(rec, indent=2))
 
 
 async def track_async(
@@ -105,10 +117,16 @@ async def track_async(
         else:
             total_cost += s.est_cost_usd
         if not forecast:
-            log(f"base {base_rid}: pass1={s.pass1}")
+            log(f"base {base_rid}: pass@1={s.pass1}")
     plan_ckpts = []
     for c in ckpts:
-        cfg = _cfg_for(c["sampler_path"], m, renderer, **kw)
+        # WHY name over batch: cookbook writes batch=0 for the "final" record,
+        # while numeric names ("000056") are zero-padded batch numbers
+        name = c.get("name") or ""
+        step = int(name) if name.isdigit() else None
+        cfg = _cfg_for(c["sampler_path"], m, renderer,
+                       label=name or (f"step{step}" if step is not None else None),
+                       **kw)
         s = await evaluate_async(cfg, store, forecast=forecast, concurrency=concurrency,
                                  log=log, base_model=base_model)
         total_cells += s.forecast.cells if s.forecast else s.n_new_samples
@@ -119,7 +137,8 @@ async def track_async(
         plan_ckpts.append({"batch": c.get("batch"), "sampler_path": c["sampler_path"],
                            "run_id": run_id(cfg)})
         if not forecast:
-            log(f"step {c.get('batch')} {run_id(cfg)}: pass1={s.pass1} ~${s.est_cost_usd or 0:.3f}")
+            _stamp(store, run_id(cfg), step, c["sampler_path"])
+            log(f"{name or 'ckpt'} {run_id(cfg)}: pass@1={s.pass1} ~${s.est_cost_usd or 0:.3f}")
             if diverge and base_rid:
                 from flipbook.diverge import diverge_async
                 pair = compare(store, base_rid, run_id(cfg))

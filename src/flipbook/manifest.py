@@ -11,6 +11,7 @@ gets a different id.
 import hashlib
 import json
 import random
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -90,6 +91,78 @@ class Manifest:
             spec=spec,
             created_at=datetime.now(UTC).isoformat(),
             rows=uniq,
+        )
+
+    @classmethod
+    def freeze_jsonl(
+        cls, path: str | Path, benchmark: str, seed: int, name: str
+    ) -> "Manifest":
+        """Freeze custom rows from a jsonl file: one object per line, either
+        {"question": str, "gold": str, "grader_id": str} or
+        {"messages": [...], "gold": str, "grader_id": str}; "system" adds a
+        leading system message to the question form. Line order is kept —
+        unlike freeze(), nothing is sampled or shuffled."""
+        from flipbook.graders import GRADERS, validate_graders
+
+        rows: list[dict] = []
+        seen: set[str] = set()
+        for i, line in enumerate(Path(path).read_text().splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"{path}:{i}: invalid JSON: {e}") from e
+            if not isinstance(rec, dict):
+                raise TypeError(f"{path}:{i}: expected a JSON object")
+            for k in ("gold", "grader_id"):
+                if k not in rec:
+                    raise ValueError(f"{path}:{i}: missing {k!r}")
+            if "messages" in rec:
+                messages = rec["messages"]
+            elif "question" in rec:
+                messages = [{"role": "user", "content": rec["question"]}]
+                if rec.get("system"):
+                    messages.insert(0, {"role": "system", "content": rec["system"]})
+            else:
+                raise ValueError(f"{path}:{i}: needs 'question' or 'messages'")
+            if not any(m.get("role") == "user" for m in messages):
+                raise ValueError(f"{path}:{i}: messages contain no user message")
+            rid = make_row_id(benchmark, question_text(messages))
+            if rid in seen:
+                continue  # identical question under this benchmark: one row
+            seen.add(rid)
+            rows.append(
+                {
+                    "row_id": rid,
+                    "benchmark": benchmark,
+                    "messages": messages,
+                    "gold": str(rec["gold"]),
+                    "grader_id": rec["grader_id"],
+                    "source_ids": {
+                        "benchmark": benchmark, "file": Path(path).name, "line": i,
+                    },
+                }
+            )
+        if not rows:
+            raise ValueError(f"{path}: freeze produced zero rows")
+        bad = sorted(validate_graders(rows))
+        if bad:
+            print(
+                f"warning: {path}: grader_ids {bad} do not resolve; registered: "
+                f"{sorted(GRADERS)} plus regex:<pattern> and module.path:func",
+                file=sys.stderr,
+            )
+        spec = {
+            "benchmarks": {benchmark: {"n": len(rows), "source": Path(path).name}},
+            "seed": seed,
+        }
+        return cls(
+            name=name,
+            manifest_hash=manifest_hash(rows),
+            spec=spec,
+            created_at=datetime.now(UTC).isoformat(),
+            rows=rows,
         )
 
     @classmethod

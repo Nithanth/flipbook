@@ -1,0 +1,20 @@
+{"question": "Write a haiku about autumn rain.", "gold": "3", "grader_id": "examples/language_graders.py:exactly_n_lines"}
+{"question": "Describe photosynthesis in exactly 20 words.", "gold": "20", "grader_id": "examples/language_graders.py:exactly_n_words"}
+{"question": "Summarize the plot of Romeo and Juliet in at most 30 words.", "gold": "30", "grader_id": "examples/language_graders.py:at_most_n_words"}
+{"question": "Write a short paragraph about the ocean without using the letter 'e'.", "gold": "e", "grader_id": "examples/language_graders.py:no_letter"}
+{"question": "Reply entirely in lowercase: tell me your favorite season and why.", "gold": "", "grader_id": "examples/language_graders.py:all_lowercase"}
+{"question": "Begin your reply with the exact words 'Once upon a time' and tell a two-sentence story about a robot.", "gold": "Once upon a time", "grader_id": "examples/language_graders.py:starts_with"}
+{"question": "Output a JSON object describing a book, with keys title, author, year. Output only the JSON.", "gold": "title,author,year", "grader_id": "examples/language_graders.py:json_keys"}
+{"question": "Output a JSON object for a pizza order with keys size, toppings, quantity. Output only the JSON.", "gold": "size,toppings,quantity", "grader_id": "examples/language_graders.py:json_keys"}
+{"question": "Name the capital of France. Reply with just the city name.", "gold": "Paris", "grader_id": "exact"}
+{"question": "What is 6 times 7? Reply with just the number.", "gold": "42", "grader_id": "exact"}
+{"question": "Reply with a single English word that contains the letter 'q'.", "gold": "q", "grader_id": "contains"}
+{"question": "Repeat the word 'quixotic' back to me.", "gold": "quixotic", "grader_id": "contains"}
+{"question": "How many days are in a leap year? Reply with just the number.", "gold": "366", "grader_id": "regex:(\\d+)"}
+{"question": "List exactly three dog breeds, one per line, nothing else.", "gold": "3", "grader_id": "examples/language_graders.py:exactly_n_lines"}
+{"question": "Write a one-sentence riddle whose answer is 'a key', then on a new line write the answer.", "gold": "the response is a coherent riddle followed by the answer 'a key' or 'key'", "grader_id": "examples/language_graders.py:judge"}
+{"question": "Write a short product description for a waterproof backpack.", "gold": "the text reads like a product description and mentions water resistance or waterproofing", "grader_id": "examples/language_graders.py:judge"}
+{"question": "Explain to a 5-year-old why the sky is blue.", "gold": "the explanation is simple enough for a child and roughly correct (scattering of light)", "grader_id": "examples/language_graders.py:judge"}
+{"question": "Write a professional two-sentence email asking for a deadline extension.", "gold": "the text is a polite professional request for a deadline extension", "grader_id": "examples/language_graders.py:judge"}
+{"question": "Translate 'the cat sleeps on the warm windowsill' into French.", "gold": "the French translation is correct", "grader_id": "examples/language_graders.py:judge"}
+{"question": "Give me a creative name for a coffee shop that also sells books.", "gold": "the name is a plausible creative name for a coffee-and-books shop", "grader_id": "examples/language_graders.py:judge"}

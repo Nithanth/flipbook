@@ -20,7 +20,7 @@ from typing import Any
 
 from flipbook.pricing import PRICES, estimate_usd
 from flipbook.runner import _prompt_ints
-from flipbook.stats import compare
+from flipbook.stats import comparability, compare
 from flipbook.store import Store
 
 TAU = 5.0 
@@ -89,6 +89,11 @@ async def diverge_async(
     ckpt = _run_rec(store, ckpt_run_id)
     if base["manifest_hash"] != ckpt["manifest_hash"]:
         raise SystemExit("base and ckpt runs used different manifests")
+    if not comparability(base, ckpt)["token_views"]:
+        raise ValueError(
+            "per-token divergence requires a shared renderer/vocabulary: "
+            f"{base.get('renderer')} vs {ckpt.get('renderer')}"
+        )
 
     # complete pairs only — scoring a row only one run judged means nothing
     pair = compare(store, base["run_id"], ckpt["run_id"])

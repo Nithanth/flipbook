@@ -3,6 +3,7 @@
 """
 
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -17,7 +18,11 @@ class Finding:
     message: str
 
 
-def lint(cfg: RunConfig, base_model: str | None = None) -> list[Finding]:
+def lint(
+    cfg: RunConfig,
+    base_model: str | None = None,
+    grader_ids: Iterable[str] | None = None,
+) -> list[Finding]:
     model = base_model or (None if cfg.model.startswith("tinker://") else cfg.model)
     inkling = model is not None and model.startswith("thinkingmachines/Inkling")
     tml = cfg.renderer == "tml_v0"
@@ -71,6 +76,18 @@ def lint(cfg: RunConfig, base_model: str | None = None) -> list[Finding]:
                 "budget` on a completed run to size it",
             )
         )
+    if grader_ids is not None:
+        from flipbook.graders import GRADERS, validate_graders
+
+        bad = sorted(validate_graders(grader_ids))
+        if bad:
+            findings.append(
+                Finding(
+                    "error", "E_UNKNOWN_GRADER",
+                    f"manifest grader_ids {bad} do not resolve; registered: "
+                    f"{sorted(GRADERS)} plus regex:<pattern> and module.path:func",
+                )
+            )
     if cfg.temperature > 0 and cfg.k == 1:
         findings.append(
             Finding(

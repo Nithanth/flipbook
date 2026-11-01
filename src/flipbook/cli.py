@@ -70,6 +70,18 @@ def _build_cfg(args, store: Store, base_model: str, renderer: str) -> RunConfig:
     )
 
 
+def _grader_ids(store: Store, name_or_hash: str) -> list[str] | None:
+    """grader_ids on a manifest's rows, or None when they can't be read —
+    lint just skips the check rather than failing on a store detail."""
+    doc = store.manifest_doc(name_or_hash)
+    if doc is None:
+        return None
+    f = store.path / "manifest_rows" / f"{doc['manifest_hash']}.parquet"
+    if not f.exists():
+        return None
+    return [r["grader_id"] for r in store.manifest_rows(doc["manifest_hash"])]
+
+
 def _print_findings(findings) -> int:
     for f in findings:
         print(f"{f.level.upper()} {f.code}: {f.message}")
@@ -80,7 +92,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="flipbook")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("freeze", help="freeze a benchmark subset into a manifest")
-    p.add_argument("--benchmark", action="append", required=True, help="name:n, repeatable")
+    p.add_argument("--benchmark", action="append", required=True,
+                   help="name:n, repeatable; with --from-jsonl, a single bare name")
+    p.add_argument("--from-jsonl", default=None,
+                   help="freeze rows from a jsonl file instead of a benchmark")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--name", required=True)
     _add_store(p)
@@ -95,6 +110,11 @@ def main(argv: list[str] | None = None) -> int:
     src.add_argument("--config", action="store_true")
     _add_eval_args(p)
     _add_store(p)
+    p = sub.add_parser("graders", help="list registered grader ids")
+    p = sub.add_parser("grade", help="dry-run a grader on one text")
+    p.add_argument("text")
+    p.add_argument("--grader", required=True)
+    p.add_argument("--gold", required=True)
     p = sub.add_parser("runs", help="list runs in the store")
     p.add_argument("--study")
     _add_store(p)
@@ -153,8 +173,15 @@ def main(argv: list[str] | None = None) -> int:
     _add_store(p)
     args = ap.parse_args(argv)
     if args.cmd == "freeze":
-        benches = {b: int(n) for b, n in (x.rsplit(":", 1) for x in args.benchmark)}
-        m = Manifest.freeze(benches, seed=args.seed, name=args.name)
+        if args.from_jsonl:
+            if len(args.benchmark) != 1 or ":" in args.benchmark[0]:
+                raise SystemExit("--from-jsonl takes a single bare --benchmark NAME (no :n)")
+            m = Manifest.freeze_jsonl(
+                args.from_jsonl, benchmark=args.benchmark[0], seed=args.seed, name=args.name
+            )
+        else:
+            benches = {b: int(n) for b, n in (x.rsplit(":", 1) for x in args.benchmark)}
+            m = Manifest.freeze(benches, seed=args.seed, name=args.name)
         _store(args).put_manifest(m.to_doc(), m.rows)
         print(f"froze {m.name}: {len(m.rows)} rows, hash {m.manifest_hash[:16]}")
         return 0
@@ -162,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
         store = _store(args)
         base_model, renderer = asyncio.run(_resolve(args))
         cfg = _build_cfg(args, store, base_model, renderer)
-        findings = lint(cfg, base_model)
+        findings = lint(cfg, base_model, grader_ids=_grader_ids(store, args.manifest))
         rc = _print_findings(findings)
         if rc:
             return rc
@@ -181,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
             print("dry run — no sampling performed")
             return 0
         print(f"run {summ.run_id}: {summ.n_new_samples} new samples, "
-              f"{summ.n_errors} errors, pass1={summ.pass1}, "
+              f"{summ.n_errors} errors, pass@1={summ.pass1}, "
               f"~${summ.est_cost_usd or 0:.4f}")
         return 0
     if args.cmd == "lint":
@@ -198,12 +225,29 @@ def main(argv: list[str] | None = None) -> int:
                 k=rec["k"], seed=rec["seed"], renderer=rec["renderer"],
                 study=rec.get("study"), label=rec.get("label"),
             )
-            findings = lint(cfg, rec["model_id"])
+            findings = lint(cfg, rec["model_id"],
+                            grader_ids=_grader_ids(store, rec["manifest_hash"]))
         else:
             base_model, renderer = asyncio.run(_resolve(args))
             cfg = _build_cfg(args, store, base_model, renderer)
-            findings = lint(cfg, base_model)
+            findings = lint(cfg, base_model, grader_ids=_grader_ids(store, args.manifest))
         return _print_findings(findings) if findings else 0
+    if args.cmd == "graders":
+        from flipbook.graders import GRADERS
+        for gid, (_, desc) in GRADERS.items():
+            print(f"{gid:<10} {desc}")
+        print("regex:<pattern>  first capture group (or whole match) vs gold, normalized")
+        print("module.path:func custom fn(text, gold) -> Grade | bool | float")
+        return 0
+    if args.cmd == "grade":
+        from flipbook.graders import UnknownGraderError, grade
+        try:
+            g = grade(args.grader, args.text, args.gold)
+        except UnknownGraderError as e:
+            print(e, file=sys.stderr)
+            return 2
+        print(f"verdict={g.verdict} extracted={g.extracted!r} note={g.note}")
+        return 0
     if args.cmd == "runs":
         store = _store(args)
         step = lambda r: (r.get("train_step")
@@ -220,6 +264,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "compare":
         pair = compare(_store(args), args.run_a, args.run_b)
+        compat = pair.comparability
+        if compat.get("blocks"):
+            for msg in compat["blocks"]:
+                print(f"error: {msg}", file=sys.stderr)
+            return 1
+        for msg in compat.get("warnings", []):
+            print(f"warning: {msg}", file=sys.stderr)
         if args.json:
             print(json.dumps(pair.to_dict(), indent=2))
         elif args.markdown:
@@ -246,6 +297,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"flips: {len(pair.flips)}  "
                   f"truncation {pair.truncation_rate_a:.2f} → {pair.truncation_rate_b:.2f}  "
                   f"cost ${pair.cost_a:.3f} vs ${pair.cost_b:.3f}")
+            for n in sorted(pair.passn, key=int):
+                e = pair.passn[n]
+                print(f"  pass@{n} {e['a']:.3f} → {e['b']:.3f}")
             for f in pair.flips:
                 tag = "HARD " if f["hard"] else ""
                 print(f"  {tag}{f['kind']}: {f['row_id']}  {f['p_a']:.2f} → {f['p_b']:.2f}")

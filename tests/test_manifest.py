@@ -113,6 +113,43 @@ def test_import_v1_rejects_tampered(tmp_path):
         import_v1(p)
 
 
+def test_freeze_jsonl(tmp_path):
+    p = tmp_path / "tasks.jsonl"
+    p.write_text("\n".join([
+        json.dumps({"question": "2+2?", "gold": "4", "grader_id": "exact"}),
+        json.dumps({
+            "messages": [{"role": "user", "content": "3+3?"}],
+            "gold": "6", "grader_id": "number",
+        }),
+        json.dumps({"question": "2+2?", "gold": "4", "grader_id": "exact"}),  # dup
+        json.dumps({"question": "5+5?", "gold": "10", "grader_id": "number",
+                    "system": "Be terse."}),
+    ]))
+    m = Manifest.freeze_jsonl(p, benchmark="mine", seed=0, name="m")
+    assert len(m.rows) == 3  # the duplicate question collapses
+    r0 = m.rows[0]
+    assert r0["row_id"] == make_row_id("mine", "2+2?")
+    assert r0["benchmark"] == "mine"
+    assert r0["gold"] == "4" and r0["grader_id"] == "exact"
+    assert r0["source_ids"]["file"] == "tasks.jsonl" and r0["source_ids"]["line"] == 1
+    assert m.rows[1]["row_id"] == make_row_id("mine", "3+3?")
+    assert m.rows[2]["messages"][0] == {"role": "system", "content": "Be terse."}
+    assert m.spec["benchmarks"] == {"mine": {"n": 3, "source": "tasks.jsonl"}}
+
+
+def test_freeze_jsonl_errors_name_the_line(tmp_path):
+    p = tmp_path / "bad.jsonl"
+    p.write_text(
+        json.dumps({"question": "q", "gold": "1", "grader_id": "exact"}) + "\n"
+        + json.dumps({"question": "q2", "grader_id": "exact"}) + "\n"
+    )
+    with pytest.raises(ValueError, match=":2:"):
+        Manifest.freeze_jsonl(p, benchmark="b", seed=0, name="m")
+    p.write_text(json.dumps({"gold": "1", "grader_id": "exact"}))
+    with pytest.raises(ValueError, match=":1:"):
+        Manifest.freeze_jsonl(p, benchmark="b", seed=0, name="m")
+
+
 def test_manifest_roundtrip_shape():
     m = Manifest(
         name="m", manifest_hash="h", spec={}, created_at="t",
