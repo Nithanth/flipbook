@@ -67,3 +67,26 @@ def test_report_reward_up_eval_down(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "reward up, held-out eval down" in out
     assert "fitting the reward" in out
+
+
+
+def test_report_skips_runs_still_sampling(tmp_path, capsys):
+    # mid-training report: the newest checkpoint is still writing samples and
+    # must not narrate as a data point
+    store = Store(tmp_path)
+    _study(store, [1] * 20, [1] * 19 + [0])
+    store.put_run({"run_id": "c2", "study": "s", "manifest_hash": "mh",
+                   "label": "step10", "train_step": 10, "k": 1,
+                   "state": "running"})
+    store.put_samples("c2", [
+        {"run_id": "c2", "row_id": f"r{i}", "sample_idx": 0,
+         "text": "t", "prompt_tokens": 1, "gen_tokens": 10,
+         "stop_reason": "stop", "verdict": 0.0,
+         "extracted": None, "failure_kind": "wrong_answer",
+         "error": None, "est_cost_usd": 0.0}
+        for i in range(20)
+    ])
+    _report(store, "s")
+    out = capsys.readouterr().out
+    assert "step 10" not in out
+    assert "step 5" in out
