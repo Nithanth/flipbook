@@ -3,8 +3,10 @@
 Mirrors train_demo.py (SFT) so the two recipes read side by side: same
 evaluator, same study layout, same forecast-then---yes gate. The training
 signal is the cookbook math env's verifiable reward (correct boxed answer,
-small format penalty), so the question flipbook asks is "does held-out eval
-move with reward, and what breaks on the way?"
+small format penalty, optional per-token length penalty or a binary
+short-answer reward on gsm8k), so the
+question flipbook asks is "does held-out eval move with reward, and what
+breaks on the way?"
 
 Cost is dominated by rollouts (groups_per_batch x group_size x max_tokens per
 step), not by the optimizer, so the forecast is a sampling estimate.
@@ -12,12 +14,16 @@ step), not by the optimizer, so the forecast is a sampling estimate.
 
 import argparse
 import asyncio
+import dataclasses
+from functools import partial
 from pathlib import Path
 
-from tinker_cookbook import checkpoint_utils, cli_utils, model_info
+import chz
+from tinker_cookbook import checkpoint_utils, cli_utils, model_info, renderers
 from tinker_cookbook.recipes.math_rl import arithmetic_env, math_env
 from tinker_cookbook.rl.train import Config
 from tinker_cookbook.rl.train import main as rl_main
+from tinker_cookbook.tokenizer_utils import get_tokenizer
 
 from flipbook.evaluator import RegressionEvaluator
 from flipbook.import_metrics import import_metrics
@@ -25,6 +31,100 @@ from flipbook.pricing import estimate_usd
 from flipbook.store import Store
 
 MODEL = "thinkingmachines/Inkling-Small"
+
+
+class LengthPenalizedEnv(math_env.MathEnv):
+    """MathEnv that also charges for every generated token:
+    reward = correct - format penalty - length_coef * len(action) / max_tokens.
+    The cheapest way to earn it is to think less; that is the point."""
+
+    def __init__(self, *args, length_coef: float, max_tokens: int, **kw):
+        super().__init__(*args, **kw)
+        self.length_coef = length_coef
+        self.max_tokens = max_tokens
+
+    async def step(self, action, *, extra=None):
+        r = await super().step(action, extra=extra)
+        penalty = self.length_coef * len(action) / self.max_tokens
+        r.metrics["length_penalty"] = penalty
+        return dataclasses.replace(r, reward=r.reward - penalty)
+
+
+class ShortAnswerEnv(math_env.MathEnv):
+    """Reward 1 for any well-formed response of at most `short_tokens` tokens,
+    0 otherwise; correctness is ignored but still logged. A reward the
+    optimizer can satisfy by dropping the reasoning - the mechanism test for
+    'reward up, held-out down'."""
+
+    def __init__(self, *args, short_tokens: int, **kw):
+        super().__init__(*args, **kw)
+        self.short_tokens = short_tokens
+
+    async def step(self, action, *, extra=None):
+        r = await super().step(action, extra=extra)
+        short = len(action) <= self.short_tokens
+        well_formed = r.metrics.get("format", 1.0) >= 1.0
+        r.metrics["short"] = float(short)
+        return dataclasses.replace(r, reward=float(short and well_formed))
+
+
+class ShapedGsm8kDataset(math_env.Gsm8kDataset):
+    def __init__(self, *args, length_coef, short_tokens, max_tokens, test_size, **kw):
+        super().__init__(*args, **kw)
+        self.length_coef, self.short_tokens, self.max_tokens = (
+            length_coef, short_tokens, max_tokens)
+        # WHY: the cookbook rolls out the whole 1319-row test split at every
+        # eval; a fixed slice keeps the in-distribution check to a few dollars
+        if kw.get("split") == "test":
+            self.ds = self.ds.select(range(min(test_size, len(self.ds))))
+
+    def _make_env_group_builder(self, x, group_size):
+        b = super()._make_env_group_builder(x, group_size)
+        if b is None:
+            return None
+        if self.short_tokens <= 0 and self.length_coef <= 0:
+            return b
+        thunk = b.env_thunk  # partial(MathEnv, problem, answer, renderer, convo_prefix=...)
+        if self.short_tokens > 0:
+            env_thunk = partial(ShortAnswerEnv, *thunk.args,
+                                short_tokens=self.short_tokens, **thunk.keywords)
+        else:
+            env_thunk = partial(LengthPenalizedEnv, *thunk.args,
+                                length_coef=self.length_coef,
+                                max_tokens=self.max_tokens, **thunk.keywords)
+        return math_env.ProblemGroupBuilder(env_thunk=env_thunk, num_envs=group_size)
+
+
+@chz.chz
+class ShapedGsm8kBuilder(math_env.Gsm8kDatasetBuilder):
+    length_coef: float = 0.0
+    short_tokens: int = 0
+    max_tokens: int
+    test_size: int = 64
+
+    async def __call__(self) -> tuple[math_env.Gsm8kDataset, math_env.Gsm8kDataset]:
+        if self.convo_prefix == "standard":
+            convo_prefix = math_env.MathEnv.standard_fewshot_prefix()
+        else:
+            convo_prefix = self.convo_prefix
+        tokenizer = get_tokenizer(self.model_name_for_tokenizer)
+        renderer = renderers.get_renderer(self.renderer_name, tokenizer=tokenizer)
+        datasets = [
+            ShapedGsm8kDataset(
+                batch_size=self.batch_size,
+                group_size=self.group_size,
+                renderer=renderer,
+                convo_prefix=convo_prefix,
+                split=split,
+                seed=self.seed,
+                length_coef=self.length_coef,
+                short_tokens=self.short_tokens,
+                max_tokens=self.max_tokens,
+                test_size=self.test_size,
+            )
+            for split in ("train", "test")
+        ]
+        return (datasets[0], datasets[1])
 
 
 def build_dataset(args, renderer_name: str):
@@ -37,6 +137,20 @@ def build_dataset(args, renderer_name: str):
             include_fewshot=True,
             group_size=args.group_size,
         )
+    # WHY: gsm8k always takes this builder, even with no reward shaping,
+    # because it is also what caps the test split the cookbook rolls out whole
+    if args.env == "gsm8k":
+        return ShapedGsm8kBuilder(
+            batch_size=args.groups_per_batch,
+            model_name_for_tokenizer=args.model,
+            renderer_name=renderer_name,
+            group_size=args.group_size,
+            seed=args.seed,
+            length_coef=args.length_coef,
+            short_tokens=args.short_tokens,
+            max_tokens=args.max_tokens,
+            test_size=args.test_size,
+        )
     return math_env.get_math_dataset_builder(
         dataset_name=args.env,
         batch_size=args.groups_per_batch,
@@ -47,7 +161,19 @@ def build_dataset(args, renderer_name: str):
     )
 
 
+def _start_batch(args) -> int:
+    """The batch a --resume run continues from; 0 for a fresh run."""
+    if not args.resume:
+        return 0
+    last = checkpoint_utils.get_last_checkpoint(str(args.log_dir))
+    return last.batch if last else 0
+
+
 def build_config(args) -> tuple[Config, RegressionEvaluator]:
+    start = _start_batch(args)
+    if start >= args.steps:
+        raise SystemExit(
+            f"nothing to do: log dir is at batch {start}, --steps is {args.steps}")
     renderer_name = model_info.get_recommended_renderer_name(args.model)
     store = Store(args.store)
     study = args.study or args.log_dir.name
@@ -69,9 +195,12 @@ def build_config(args) -> tuple[Config, RegressionEvaluator]:
             "group_size": args.group_size, "groups_per_batch": args.groups_per_batch,
             "rollout_max_tokens": args.max_tokens, "kl_coef": args.kl_coef,
             "lora_rank": args.lora_rank, "steps": args.steps,
+            "length_coef": args.length_coef,
+            "short_tokens": args.short_tokens,
         },
         effort_pair=(0.2, 0.9) if args.effort_pair else None,
         study=study,
+        start_step=start,
     )
     return Config(
         learning_rate=args.lr,
@@ -94,27 +223,52 @@ def build_config(args) -> tuple[Config, RegressionEvaluator]:
     ), evaluator
 
 
-def forecast(args) -> tuple[int, float]:
+def forecast(args) -> tuple[int, float, float]:
     """Upper-bound rollout tokens: every rollout runs to max_tokens. Real
     usage is lower (Inkling stops early on easy problems), so the printed
-    number is a ceiling, not an estimate."""
-    rollouts = args.steps * args.groups_per_batch * args.group_size
+    number is a ceiling, not an estimate. Returns (rollout tokens, rollout
+    usd, in-distribution test usd)."""
+    remaining = args.steps - _start_batch(args)
+    rollouts = remaining * args.groups_per_batch * args.group_size
     gen = rollouts * args.max_tokens
-    return gen, estimate_usd(args.model, "sample", gen)
+    n_evals = (
+        remaining // args.eval_every
+        if args.resume
+        else args.steps // args.eval_every + 1
+    )
+    test_tok = n_evals * args.test_size * args.max_tokens if args.env == "gsm8k" else 0
+    return gen, estimate_usd(args.model, "sample", gen), estimate_usd(args.model, "sample", test_tok)
 
 
 def run_train(args) -> int:
-    gen, cost = forecast(args)
-    n_evals = args.steps // args.eval_every + 1
-    print(f"{args.steps} steps x {args.groups_per_batch} groups x {args.group_size} rollouts "
+    gen, cost, test_cost = forecast(args)
+    start = _start_batch(args)
+    remaining = args.steps - start
+    n_evals = (
+        remaining // args.eval_every
+        if args.resume
+        else args.steps // args.eval_every + 1
+    )
+    resumed = f"resume from batch {start}: " if start else ""
+    print(f"{resumed}{remaining} steps x {args.groups_per_batch} groups x {args.group_size} rollouts "
           f"x <= {args.max_tokens} tok = <= {gen:,} rollout tokens")
-    print(f"forecast <= ${cost:.2f} rollouts + {n_evals} in-loop eval points "
+    print(f"rollouts <= ${cost:.2f}")
+    if args.env == "gsm8k":
+        print(f"in-distribution test: {n_evals} x {args.test_size} rollouts "
+              f"x <= {args.max_tokens} tok <= ${test_cost:.2f}")
+    elif args.env != "arithmetic":
+        print("in-distribution test: the cookbook rolls out this env's whole test split "
+              "at every eval point; not forecast here")
+    print(f"forecast <= ${cost + test_cost:.2f} + {n_evals} in-loop eval points"
+          f"{' after the resumed step' if args.resume else ''} "
           f"(manifest rows x k={args.k} each, priced by flipbook)")
     if not args.yes:
         print("dry run: pass --yes to train")
         return 3  # distinct from success so the CLI wrapper skips the "inspect" hint
     config, evaluator = build_config(args)
-    cli_utils.check_log_dir(config.log_path, behavior_if_exists="raise")
+    cli_utils.check_log_dir(
+        config.log_path,
+        behavior_if_exists="resume" if args.resume else "raise")
     asyncio.run(rl_main(config))
     # the RL loop saves sampler_weights/final and never evals it (unlike the
     # SFT loop): score it here so the study arc includes the last checkpoint
@@ -159,10 +313,27 @@ def main() -> int:
     p.add_argument("--eval-every", type=int, default=5,
                    help="must divide --save-every so eval'd weights are durable")
     p.add_argument("--k", type=int, default=2)
+    p.add_argument("--length-coef", type=float, default=0.0,
+                   help="subtract length_coef * tokens/max_tokens from each rollout's "
+                        "reward (gsm8k only); a realistic 'stop rambling' penalty whose "
+                        "cheapest exploit is to drop the reasoning")
+    p.add_argument("--short-tokens", type=int, default=0,
+                   help="binary reward: 1 for a well-formed answer of at most N "
+                        "tokens, 0 otherwise, correctness ignored (gsm8k only); the "
+                        "optimizer's cheapest path is to stop reasoning")
+    p.add_argument("--test-size", type=int, default=64,
+                   help="rows of the env's test split rolled out at each eval as the "
+                        "in-distribution check (cookbook default is the whole split)")
     p.add_argument("--diverge", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--effort-pair", action=argparse.BooleanOptionalAction, default=False)
+    p.add_argument("--resume", action="store_true",
+                   help="continue from the last checkpoint in --log-dir; --steps is the new total")
     p.add_argument("--yes", action="store_true")
     args = p.parse_args()
+    if args.length_coef > 0 and args.short_tokens > 0:
+        raise SystemExit("--short-tokens and --length-coef are alternative reward shapes; pick one")
+    if (args.length_coef > 0 or args.short_tokens > 0) and args.env != "gsm8k":
+        raise SystemExit("--length-coef and --short-tokens only apply to the gsm8k env")
     if args.log_dir is None:
         args.log_dir = Path("runs_rl") / (args.study or "demo_eval")
     if args.save_every % args.eval_every:
