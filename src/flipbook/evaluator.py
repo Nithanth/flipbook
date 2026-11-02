@@ -129,17 +129,23 @@ class RegressionEvaluator(SamplingClientEvaluator):
                 return self._store_metrics(step, self._metrics_for(name, self._baseline_rid, self._baseline_rid))
         run_ids = {}
         for eff in self.efforts:
+            # canonical path, not the ephemeral one: run_id then matches what
+            # `flipbook eval`/`track` compute for the saved numbered checkpoint
             cfg = RunConfig(
-                model=self._resolved.base_model if as_baseline else model_path,
+                model=self._resolved.base_model if as_baseline
+                      else self._canonical_path(model_path, step),
                 manifest_hash=manifest.manifest_hash,
                 effort=eff, temperature=self.temperature,
                 max_tokens=self.max_tokens, k=self.k, seed=self.seed,
                 renderer=self._resolved.renderer, study=self.study,
                 label="baseline" if as_baseline and eff == self.efforts[0] else f"step{step}",
             )
+            # base_model keeps resolve_model offline: the ephemeral path is
+            # tinker:// but the live client already knows its weights
             await evaluate_async(
                 cfg, self.store, concurrency=self.concurrency,
                 log=lambda m: log.info(m), sampling_client=sampling_client,
+                base_model=self._resolved.base_model,
             )
             rid = run_id(cfg)
             run_ids[eff] = rid
@@ -151,11 +157,15 @@ class RegressionEvaluator(SamplingClientEvaluator):
             for erid in run_ids.values():
                 self._patch_provenance(erid, step, model_path, baseline_rid)
         metrics = self._metrics_for(name, baseline_rid, rid)
+        # WHY live client: the SFT loop evaluates before it saves the step's
+        # checkpoint, so the numbered sampler path does not exist yet; the
+        # live client is the only handle that works at eval time
         if self.diverge and rid != baseline_rid:
             flips = [f["row_id"] for f in compare(self.store, baseline_rid, rid).flips]
             ds = await diverge_async(
                 self.store, baseline_rid, rid, flips or None,
                 concurrency=self.concurrency, log=lambda m: log.info(m),
+                ckpt_client=sampling_client,
             )
             if ds.n_rows:
                 metrics[f"{name}/divergence_mean_nats"] = ds.mean_sum_nats
@@ -166,6 +176,7 @@ class RegressionEvaluator(SamplingClientEvaluator):
                 es_ckpt = await effort_gap_async(
                     self.store, rid, e_lo, e_hi,
                     concurrency=self.concurrency, log=lambda m: log.info(m),
+                    client=sampling_client,
                 )
                 es_base = await effort_gap_async(
                     self.store, baseline_rid, e_lo, e_hi,

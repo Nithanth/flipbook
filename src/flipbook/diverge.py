@@ -83,6 +83,7 @@ async def diverge_async(
     forecast: bool = False,
     concurrency: int = 8,
     log: Callable[[str], None] = print,
+    ckpt_client: Any | None = None,
 ) -> DivergenceSummary:
     import tinker
     from tinker.types import ModelInput
@@ -139,7 +140,7 @@ async def diverge_async(
     def _client(rec: dict) -> Any:
         return _sampling_client(sc, rec["checkpoint_path"], rec["model_id"])
 
-    c_base, c_ckpt = _client(base), _client(ckpt)
+    c_base, c_ckpt = _client(base), ckpt_client or _client(ckpt)
     stops = list(renderer.get_stop_sequences())
     sem = asyncio.Semaphore(concurrency)
 

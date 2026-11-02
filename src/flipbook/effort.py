@@ -40,6 +40,7 @@ async def effort_gap_async(
     forecast: bool = False,
     concurrency: int = 8,
     log: Callable[[str], None] = print,
+    client: Any | None = None,
 ) -> EffortSummary:
     import tinker
     from tinker.types import ModelInput
@@ -85,8 +86,9 @@ async def effort_gap_async(
         )
     # fully deduped runs skip sampling and summarize the stored rows below
     if todo:
-        sc = tinker.ServiceClient()
-        client: Any = _sampling_client(sc, rec["checkpoint_path"], rec["model_id"])
+        if client is None:
+            sc = tinker.ServiceClient()
+            client = _sampling_client(sc, rec["checkpoint_path"], rec["model_id"])
         sem = asyncio.Semaphore(concurrency)
 
         async def _lp_sum(seq: list[int], plen: int) -> float:
