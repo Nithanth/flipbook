@@ -40,13 +40,14 @@ def _cont_tokens():
 
 class FakeSampler:
     """Answers every prompt with the same canned sequence."""
-    def __init__(self, tokens):
+    def __init__(self, tokens, model_path=MODEL):
         self.tokens = tokens
+        self.model_path = model_path
     async def sample_async(self, prompt, num_samples, sampling_params, **kw):
         seq = SimpleNamespace(tokens=self.tokens, stop_reason="stop", logprobs=None)
         return SimpleNamespace(sequences=[seq] * num_samples)
     async def _get_sampler_submit(self):
-        return SimpleNamespace(model_path=MODEL)
+        return SimpleNamespace(model_path=self.model_path)
     async def compute_logprobs_async(self, seq):
         return [None] + [-0.5] * (len(seq.to_ints()) - 1)
 
@@ -207,3 +208,34 @@ def test_start_step_offsets_calls(tmp_path):
     with pytest.raises(ValueError):
         RegressionEvaluator(manifest="m", baseline="x", store=store,
                             eval_every=8, start_step=5)
+
+
+
+def test_ephemeral_path_runs_under_the_canonical_checkpoint(tmp_path):
+    # in-loop samplers report sampler_weights/ephemeral_N, which expires; the
+    # run must be billed to the numbered checkpoint so `flipbook eval` dedupes
+    store, m = _store_with_manifest(tmp_path)
+    eph = "tinker://x:train:0/sampler_weights/ephemeral_3"
+    canon = "tinker://x:train:0/sampler_weights/000008"
+    fake = FakeSampler(_cont_tokens(), model_path=eph)
+    base_cfg = _cfg(m.manifest_hash)
+    asyncio.run(evaluate_async(base_cfg, store, sampling_client=fake))
+    base_rid = run_id(base_cfg)
+    ev = RegressionEvaluator(
+        manifest="m", baseline=base_rid, store=store, eval_every=8,
+        efforts=(0.9,), k=2, temperature=0.0, max_tokens=256,
+        diverge=False, effort_pair=None)
+    # resolve_model on a tinker:// path needs REST; the evaluator resolves
+    # once, so pre-set it as it would look after a real first call
+    from flipbook.runner import Resolved
+    ev._resolved = Resolved(base_model=MODEL, renderer="tml_v0", checkpoint_path=eph)
+    asyncio.run(ev(fake, step=8))
+    import json
+    canon_cfg = RunConfig(
+        model=canon, manifest_hash=m.manifest_hash, effort=0.9,
+        temperature=0.0, max_tokens=256, k=2, seed=0, renderer="tml_v0",
+        label="step8")
+    want = run_id(canon_cfg)
+    rec = json.loads((store.path / "runs" / f"{want}.json").read_text())
+    assert rec["checkpoint_path"] == canon
+    assert rec["provenance"]["baseline_run_id"] == base_rid
