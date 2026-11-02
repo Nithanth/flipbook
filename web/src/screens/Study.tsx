@@ -165,26 +165,36 @@ function tickSteps(x0: number, x1: number): number[] {
 interface Derived {
   rows: StepRow[];
   metricKeys: string[];
-  lossKey: string | null;
-  lossSeries: { step: number; value: number }[];
+  trainKey: { key: string; label: string; kind: "loss" | "reward" } | null;
+  trainSeries: { step: number; value: number }[];
+  rlSeries: {
+    key: string;
+    label: string;
+    tip: string;
+    fmt: (v: number) => string;
+    pts: { x: number; y: number }[];
+  }[];
   epochStarts: number[];
 }
 
 function derive(detail: StudyDetail): Derived {
   const m = detail.metrics;
   const pick = (suffix: string) => {
-    const k = Object.keys(m).find((x) => x.endsWith(suffix));
-    return k ? new Map(m[k].map((r) => [r.step, r.value])) : new Map<number, number>();
+    // eval series split across `eval/` (synthesized) and `flipbook/*`
+    // (in-loop) namespaces - merge them, flipbook winning a shared step
+    const out = new Map<number, number>();
+    const keys = Object.keys(m)
+      .filter((x) => x.endsWith(suffix) && !x.endsWith("/error"))
+      .sort((a, b) => Number(a.startsWith("flipbook/")) - Number(b.startsWith("flipbook/")));
+    for (const k of keys) for (const r of m[k]) out.set(r.step, r.value);
+    return out;
   };
   const pass1 = pick("/pass1");
-  // the evaluator emits pass{n} for n in 2..k; keep the largest n
-  const passKKey = Object.keys(m)
-    .map((x) => ({ x, n: Number(/\/pass(\d+)$/.exec(x)?.[1]) }))
-    .filter((k) => k.n > 1)
-    .sort((a, b) => b.n - a.n)[0]?.x;
-  const passK = passKKey
-    ? new Map(m[passKKey].map((r) => [r.step, r.value]))
-    : new Map<number, number>();
+  // the evaluator emits pass{n} for n in 2..k; keep the largest n, merged
+  const passNs = Object.keys(m)
+    .map((x) => Number(/\/pass(\d+)$/.exec(x)?.[1]))
+    .filter((n) => n > 1);
+  const passK = pick(`/pass${Math.max(0, ...passNs)}`);
   const delta = pick("/delta_vs_base");
   const ciLo = pick("/delta_ci_lo");
   const ciHi = pick("/delta_ci_hi");
@@ -196,9 +206,35 @@ function derive(detail: StudyDetail): Derived {
   const pSkip = pick("/p_skip");
   const cost = pick("/cost_usd");
   // next-token nll for SFT runs; bpb is the same quantity in bits.
-  // other recipes (RL) log different keys and just show no loss line
+  // RL logs rollout reward instead - same right-axis role
   const lossKey = ["train_mean_nll", "train_mean_bpb"].find((k) => m[k]?.length) ?? null;
-  const lossSeries = lossKey ? m[lossKey] : [];
+  const rewardKey =
+    (m["env/all/reward/total"]?.length ? "env/all/reward/total" : null) ??
+    Object.keys(m).find((k) => k.endsWith("/reward/total") && m[k].length) ??
+    (m["reward/mean"]?.length ? "reward/mean" : null);
+  const trainKey = lossKey
+    ? { key: lossKey, label: "train loss", kind: "loss" as const }
+    : rewardKey
+      ? { key: rewardKey, label: "rollout reward", kind: "reward" as const }
+      : null;
+  const trainSeries = trainKey ? m[trainKey.key] : [];
+
+  const rlSeries = (
+    [
+      ["env/all/reward/total", "reward", "mean verifiable reward per rollout batch - what the optimizer is actually maximizing", (v: number) => v.toFixed(2)],
+      ["env/all/ac_tokens_per_turn", "rollout tokens", "action tokens generated per turn during rollouts - drift means the policy changed how much it says on the training distribution", (v: number) => v.toFixed(0)],
+      ["optim/entropy", "entropy", "policy entropy over sampled actions - collapse means the policy sharpens onto fewer tokens", (v: number) => v.toFixed(3)],
+      ["kl_pre_post_v1", "kl pre/post", "KL of the policy before vs after each optim step - the step size the optimizer actually took", (v: number) => (Math.abs(v) < 1e-3 ? v.toExponential(1) : v.toFixed(4))],
+    ] as const
+  )
+    .filter(([key]) => m[key]?.length)
+    .map(([key, label, tip, fmt]) => ({
+      key,
+      label,
+      tip,
+      fmt,
+      pts: m[key].map((r) => ({ x: r.step, y: r.value })),
+    }));
 
   // epoch boundaries: steps where the epoch counter ticks up
   const epochKey = Object.keys(m).find((x) => x === "epoch" || x.endsWith("/epoch"));
@@ -219,7 +255,7 @@ function derive(detail: StudyDetail): Derived {
     if (st != null) gapByStep.set(st, g);
   }
 
-  const steps = [...new Set([...pass1.keys(), ...lossSeries.map((s) => s.step)])].sort(
+  const steps = [...new Set([...pass1.keys(), ...trainSeries.map((s) => s.step)])].sort(
     (a, b) => a - b,
   );
   const rows: StepRow[] = steps.map((step) => ({
@@ -238,10 +274,10 @@ function derive(detail: StudyDetail): Derived {
     div: div.get(step),
     pSkip: pSkip.get(step),
     cost: cost.get(step),
-    loss: lossSeries.find((s) => s.step === step)?.value,
+    loss: trainSeries.find((s) => s.step === step)?.value,
     effortGap: gapByStep.get(step),
   }));
-  return { rows, metricKeys: Object.keys(m), lossKey, lossSeries, epochStarts };
+  return { rows, metricKeys: Object.keys(m), trainKey, trainSeries, rlSeries, epochStarts };
 }
 
 /** pass1 (left axis) vs train loss (right axis) - the collision chart.
@@ -260,7 +296,9 @@ function Hero({
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const pts = d.rows.filter((r) => r.pass1 != null);
-  const lossMax = Math.max(1e-9, ...d.lossSeries.map((s) => s.value));
+  // rewards are correctness fractions: fixed [0,1] axis; loss scales to max
+  const isReward = d.trainKey?.kind === "reward";
+  const lossMax = isReward ? 1 : Math.max(1e-9, ...d.trainSeries.map((s) => s.value));
   if (!pts.length) return <p className="sub">no eval metrics for this study</p>;
 
   const w = 860;
@@ -268,7 +306,7 @@ function Hero({
   const pad = 44;
   const allSteps = [
     ...pts.map((r) => r.step),
-    ...d.lossSeries.map((s) => s.step),
+    ...d.trainSeries.map((s) => s.step),
     ...ghost.map((r) => r.step),
   ];
   const x0 = Math.min(...allSteps);
@@ -285,16 +323,16 @@ function Hero({
   const ghostPath = ghost
     .map((r, i) => `${i ? "L" : "M"}${sx(r.step)},${syPass(r.pass1!)}`)
     .join(" ");
-  const lossPath = d.lossSeries
+  const lossPath = d.trainSeries
     .map((r, i) => `${i ? "L" : "M"}${sx(r.step)},${syLoss(r.value)}`)
     .join(" ");
 
   // snap to every logged step - evals are sparse, loss lands every step
   const hoverSteps = [
-    ...new Set([...pts.map((r) => r.step), ...d.lossSeries.map((s) => s.step)]),
+    ...new Set([...pts.map((r) => r.step), ...d.trainSeries.map((s) => s.step)]),
   ].sort((a, b) => a - b);
   const hovRow = hover != null ? pts.find((r) => r.step === hover) : undefined;
-  const hovLoss = hover != null ? d.lossSeries.find((s) => s.step === hover)?.value : undefined;
+  const hovLoss = hover != null ? d.trainSeries.find((s) => s.step === hover)?.value : undefined;
   const onMove = (e: MouseEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const mx = ((e.clientX - rect.left) / rect.width) * w;
@@ -429,7 +467,7 @@ function Hero({
                   ? ([[`pass@1 ${(hovRow.pass1! * 100).toFixed(1)}%`, "var(--accent)", false]] as [string, string, boolean][])
                   : []),
                 ...(hovLoss != null
-                  ? ([[`nll  ${hovLoss.toPrecision(3)}`, "var(--accent2)", false]] as [string, string, boolean][])
+                  ? ([[`${isReward ? "rwd" : "nll"}  ${hovLoss.toPrecision(3)}`, "var(--accent2)", false]] as [string, string, boolean][])
                   : []),
               ]}
             />
@@ -437,9 +475,11 @@ function Hero({
         )}
         <text x={6} y={pad} style={{ fill: "var(--accent)" }} fontSize={11}>100%</text>
         <text x={6} y={h - pad} style={{ fill: "var(--accent)" }} fontSize={11}>0%</text>
-        {d.lossSeries.length > 0 && (
+        {d.trainSeries.length > 0 && (
           <>
-            <text x={w - pad + 6} y={pad} style={{ fill: "var(--accent2)" }} fontSize={11}>{lossMax.toPrecision(2)}</text>
+            <text x={w - pad + 6} y={pad} style={{ fill: "var(--accent2)" }} fontSize={11}>
+              {isReward ? "1" : lossMax.toPrecision(2)}
+            </text>
             <text x={w - pad + 6} y={h - pad} style={{ fill: "var(--accent2)" }} fontSize={11}>0</text>
           </>
         )}
@@ -456,15 +496,19 @@ function Hero({
             <span style={{ color: "var(--warn)" }}>┅ {ghostName}</span>
           </Tip>
         )}
-        {d.lossKey && (
-          <Tip text={`${d.lossKey}: training loss on the fine-tuning batches - what the optimizer sees (right axis). Logged every optimizer step (one batch); evals run every ${evalGap ?? "?"} steps. It can keep falling while eval behavior collapses; that's the collision this chart exists to show.`}>
-            <span style={{ color: "var(--accent2)" }}>┅ {d.lossKey}</span>
+        {d.trainKey && (
+          <Tip text={`${d.trainKey.key}: ${
+            isReward
+              ? "mean rollout reward on the training env (right axis, 0-1). It can saturate while held-out eval never moves"
+              : "training loss on the fine-tuning batches - what the optimizer sees (right axis). It can keep falling while eval behavior collapses; that's the collision this chart exists to show"
+          }. Logged every optimizer step (one batch); evals run every ${evalGap ?? "?"} steps.`}>
+            <span style={{ color: "var(--accent2)" }}>┅ {d.trainKey.label}</span>
           </Tip>
         )}
       </div>
       <p className="sub" style={{ marginTop: 4 }}>
         x = optimizer step (one training batch).
-        {d.lossSeries.length ? " train loss is logged every step; " : " "}
+        {d.trainSeries.length ? ` ${d.trainKey?.label} is logged every step; ` : " "}
         each pass@1 dot is a full eval sweep
         {evalGap ? `, run every ${evalGap} steps` : ""}.
       </p>
@@ -528,18 +572,73 @@ function Narrative({ d, runs }: { d: Derived; runs: Run[] }) {
   const trough = after.reduce((a, b) => (b.pass1! < a.pass1! ? b : a));
   const last = evals[evals.length - 1];
   const first = evals[0];
-  const collapsed = peak.pass1! - trough.pass1! > 0.05 && last.pass1! < peak.pass1! - 0.05;
-  const improved = last.pass1! - first.pass1! > 0.05;
-  const verdict = collapsed
-    ? "the fine-tune regressed this eval"
-    : improved
-      ? "the fine-tune improved this eval"
-      : peak.pass1! - trough.pass1! > 0.05
-        ? "pass@1 dipped mid-training and recovered"
-        : "no eval-visible change";
+  // a moved point estimate only counts when its paired CI excludes zero;
+  // steps without a CI fall back to the point-estimate rule
+  const dropCi = trough.ci;
+  const endCi = last.ci;
+  const collapsed =
+    peak.pass1! - trough.pass1! > 0.05 &&
+    last.pass1! < peak.pass1! - 0.05 &&
+    (dropCi ? dropCi[1] < 0 : true);
+  const improved =
+    last.pass1! - first.pass1! > 0.05 && (endCi ? endCi[0] > 0 : true);
+  const noisy =
+    !collapsed && !improved && endCi != null && endCi[0] <= 0 && endCi[1] >= 0 &&
+    Math.abs(last.pass1! - first.pass1!) >= 0.05;
+  // RL studies: reward can move independently of held-out eval - that's the read
+  const rewardPts = d.rlSeries.find((s) => s.key.endsWith("/reward/total"))?.pts;
+  const tokPts = d.rlSeries.find((s) => s.key === "env/all/ac_tokens_per_turn")?.pts;
+  const rlBullets: { t: string; href?: string }[] = [];
+  let rewardRose = false;
+  if (rewardPts?.length) {
+    const rf = rewardPts[0].y;
+    const rl = rewardPts[rewardPts.length - 1].y;
+    rewardRose = rl - rf > 0.1;
+    if (rf >= 0.95)
+      rlBullets.push({
+        t: `reward saturated from the first batch (${rf.toFixed(2)}): this env gives the policy no gradient signal`,
+      });
+    else if (rewardRose && collapsed)
+      rlBullets.push({
+        t: `rollout reward rose ${rf.toFixed(2)} -> ${rl.toFixed(2)} while held-out pass@1 fell: the policy is fitting the reward, not the capability`,
+      });
+    else if (rewardRose && improved)
+      rlBullets.push({
+        t: `reward and held-out pass@1 rose together (${rf.toFixed(2)} -> ${rl.toFixed(2)}, ${pct(first.pass1!)} -> ${pct(last.pass1!)})`,
+      });
+    else if (rewardRose)
+      rlBullets.push({
+        t: `rollout reward rose ${rf.toFixed(2)} -> ${rl.toFixed(2)}; held-out pass@1 unchanged: no transfer to the eval either way`,
+      });
+    else rlBullets.push({ t: `rollout reward flat (${rf.toFixed(2)} -> ${rl.toFixed(2)})` });
+  }
+  if (tokPts && tokPts.length >= 2) {
+    const tf = tokPts[0].y;
+    const tl = tokPts[tokPts.length - 1].y;
+    if (Math.abs(tl - tf) / tf > 0.2)
+      rlBullets.push({
+        t: `rollouts ${tl < tf ? "shortened" : "lengthened"} ${tf.toFixed(0)} -> ${tl.toFixed(0)} tokens per turn on the training distribution`,
+      });
+  }
+  const hacking = rewardRose && collapsed;
+  const verdict = hacking
+    ? "reward up, held-out eval down"
+    : collapsed
+      ? "the fine-tune regressed this eval"
+      : improved
+        ? "the fine-tune improved this eval"
+        : noisy || peak.pass1! - trough.pass1! <= 0.05
+          ? "no eval-visible change"
+          : "pass@1 dipped mid-training and recovered";
   // did divergence move before the first significant accuracy drop?
   const cliff = evals.find((r) => r.ci && r.ci[1] < 0);
-  if (peak.pass1! - trough.pass1! > 0.05) {
+  if (noisy) {
+    const sgn = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}`;
+    bullets.push({
+      t: `pass@1 ${pct(first.pass1!)} -> ${pct(last.pass1!)} by step ${last.step}, but the CI [${sgn(endCi![0])}, ${sgn(endCi![1])}] includes zero - within noise`,
+      href: cmp(last.step),
+    });
+  } else if (peak.pass1! - trough.pass1! > 0.05) {
     // a "peak" inside the CI of the first point is noise - anchor on where it held
     const realPeak = peak.step !== first.step && peak.ci && peak.ci[0] > 0;
     const held = cliff ? evals[Math.max(0, evals.indexOf(cliff) - 1)] : peak;
@@ -608,7 +707,7 @@ function Narrative({ d, runs }: { d: Derived; runs: Run[] }) {
     <div className="card read">
       <div className="mini-label">the read</div>
       <p className="verdict">{verdict}</p>
-      {bullets.slice(0, 4).map((b) =>
+      {[...rlBullets, ...bullets].slice(0, 4).map((b) =>
         b.href ? (
           <p key={b.t}>
             <a href={b.href}>{b.t}</a>
@@ -632,7 +731,7 @@ function MetricStrip({
   onFocus: (label: string | null) => void;
   go: (step: number) => void;
 }) {
-  const cards: [string, string, (r: StepRow) => number | undefined, (v: number) => string][] = [
+  const evalCards: [string, string, (r: StepRow) => number | undefined, (v: number) => string][] = [
     ["pass@k", "fraction of questions where at least one of the k samples was correct - the headroom above pass@1", (r) => r.passK, (v) => `${(v * 100).toFixed(1)}%`],
     ["divergence (nats)", "How far the checkpoint's token probabilities moved from base on the baseline's own reasoning traces. ~0 = unchanged policy; very negative = the internals shifted hard - often before accuracy shows it.", (r) => r.div, (v) => v.toLocaleString("en-US", { maximumFractionDigits: 0 })],
     ["mean gen tokens", "Average response length. A sudden drop or spike means the model changed how it answers (rambling into the cap, or collapsing to short format-locked answers).", (r) => r.genTok, (v) => v.toLocaleString("en-US", { maximumFractionDigits: 0 })],
@@ -641,39 +740,43 @@ function MetricStrip({
     ["skip prob", "The model's own probability of ending the response immediately (end-of-message as the first token). Rising = it increasingly wants to emit nothing.", (r) => r.pSkip, (v) => `${(v * 100).toFixed(1)}%`],
     ["eval cost", "Sampling cost of this eval point, in USD.", (r) => r.cost, (v) => `$${v.toFixed(2)}`],
   ];
-  const sel = cards.find(([label]) => label === focus);
+  const cards = [
+    ...evalCards.map(([label, tip, get, fmt]) => ({
+      label,
+      tip,
+      fmt,
+      pts: d.rows.filter((r) => get(r) != null).map((r) => ({ x: r.step, y: get(r)! })),
+    })),
+    ...d.rlSeries,
+  ];
+  const sel = cards.find((c) => c.label === focus);
   return (
     <>
       <div className="strip">
-        {cards.map(([label, tip, get, fmt]) => (
+        {cards.map((c) => (
           <div
-            className={focus === label ? "mini sel" : "mini"}
-            key={label}
-            onClick={() => onFocus(focus === label ? null : label)}
+            className={focus === c.label ? "mini sel" : "mini"}
+            key={c.label}
+            onClick={() => onFocus(focus === c.label ? null : c.label)}
           >
-            <div className="mini-label"><Tip text={tip}>{label}</Tip></div>
-            <TinySeries
-              pts={d.rows.filter((r) => get(r) != null).map((r) => ({ x: r.step, y: get(r)! }))}
-            />
+            <div className="mini-label"><Tip text={c.tip}>{c.label}</Tip></div>
+            <TinySeries pts={c.pts} />
             <div className="mini-val">
-              {(() => {
-                const vs = d.rows.filter((r) => get(r) != null);
-                return vs.length ? fmt(get(vs[vs.length - 1])!) : "-";
-              })()}
+              {c.pts.length ? c.fmt(c.pts[c.pts.length - 1].y) : "-"}
             </div>
           </div>
         ))}
       </div>
       {sel && (
         <FocusChart
-          key={sel[0]}
-          label={sel[0]}
-          pts={d.rows.filter((r) => sel[2](r) != null).map((r) => ({ x: r.step, y: sel[2](r)! }))}
+          key={sel.label}
+          label={sel.label}
+          pts={sel.pts}
           ghost={d.rows.filter((r) => r.pass1 != null).map((r) => ({ x: r.step, y: r.pass1! }))}
           ghostLabel="pass@1"
           xDomain={[Math.min(...d.rows.map((r) => r.step)), Math.max(...d.rows.map((r) => r.step))]}
           epochStarts={d.epochStarts}
-          fmt={sel[3]}
+          fmt={sel.fmt}
           go={go}
         />
       )}

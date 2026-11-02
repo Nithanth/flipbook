@@ -373,6 +373,17 @@ def _report(store: Store, study: str) -> int:
     arc = [f"{pass1(base):.2f}"] + [f"{pass1(r):.2f} (step {step(r)})" for r in ckpts]
     print(f"  pass@1: {' -> '.join(arc)}")
 
+    tm = store.training_metrics(study).to_pylist()
+    def _mseries(key):
+        return sorted((m["step"], m["value"]) for m in tm if m["key"] == key)
+
+    reward = _mseries("env/all/reward/total")
+    rtok = _mseries("env/all/ac_tokens_per_turn")
+    if reward:
+        tok = (f" · rollout tokens/turn {rtok[0][1]:.0f} -> {rtok[-1][1]:.0f}"
+               if rtok else "")
+        print(f"  reward: {reward[0][1]:.2f} -> {reward[-1][1]:.2f}{tok}")
+
     # mean divergence + p_skip per checkpoint from its parquet, if computed
     divdir = store.path / "divergence"
     div = {}
@@ -387,11 +398,45 @@ def _report(store: Store, study: str) -> int:
 
     last, first_ck = ckpts[-1], ckpts[0]
     trough = min(ckpts, key=lambda r: pass1(r))
-    collapsed = pass1(base) - pass1(last) > 0.05
-    verdict = ("the fine-tune regressed this eval" if collapsed
-               else "the fine-tune improved this eval"
-               if pass1(last) - pass1(first_ck) > 0.05 else "no eval-visible change")
+    # a moved point estimate only counts when its paired CI excludes zero;
+    # unpaired runs get the old point-estimate rule
+    pair = compare(store, base["run_id"], last["run_id"])
+    if pair.n_pairs:
+        collapsed = pair.delta_ci[1] < 0
+        improved = pair.delta_ci[0] > 0
+    else:
+        collapsed = pass1(base) - pass1(last) > 0.05
+        improved = pass1(last) - pass1(first_ck) > 0.05
+    reward_rose = bool(reward) and reward[-1][1] - reward[0][1] > 0.1
+    verdict = ("reward up, held-out eval down" if collapsed and reward_rose
+               else "the fine-tune regressed this eval" if collapsed
+               else "the fine-tune improved this eval" if improved
+               else "no eval-visible change")
     print(f"\n  the read: {verdict}")
+    if reward:
+        rf, rl = reward[0][1], reward[-1][1]
+        if rf >= 0.95:
+            print(f"    reward saturated from the first batch ({rf:.2f}): "
+                  "this env gives the policy no gradient signal")
+        elif reward_rose and collapsed:
+            print(f"    rollout reward rose {rf:.2f} -> {rl:.2f} while held-out "
+                  "pass@1 fell: the policy is fitting the reward, not the capability")
+        elif reward_rose and improved:
+            print(f"    reward and held-out pass@1 rose together ({rf:.2f} -> {rl:.2f}, "
+                  f"{pass1(base):.2f} -> {pass1(last):.2f})")
+        elif reward_rose:
+            print(f"    rollout reward rose {rf:.2f} -> {rl:.2f}; held-out pass@1 "
+                  "unchanged: no transfer to the eval either way")
+        else:
+            print(f"    rollout reward flat ({rf:.2f} -> {rl:.2f})")
+    if rtok and abs(rtok[-1][1] - rtok[0][1]) / rtok[0][1] > 0.2:
+        print(f"    rollouts {'shortened' if rtok[-1][1] < rtok[0][1] else 'lengthened'} "
+              f"{rtok[0][1]:.0f} -> {rtok[-1][1]:.0f} tokens per turn on the "
+              "training distribution")
+    if not collapsed and not improved and pair.n_pairs and abs(pair.delta) >= 0.05:
+        print(f"    pass@1 {pass1(base):.2f} -> {pass1(last):.2f} by step {step(last)}, "
+              f"but the CI [{pair.delta_ci[0]:+.2f}, {pair.delta_ci[1]:+.2f}] includes zero: "
+              f"within noise at n={pair.n_pairs}")
     if collapsed:
         print(f"    pass@1 {pass1(base):.2f} -> {pass1(trough):.2f} by step {step(trough)}"
               + (f", ending {pass1(last):.2f} (step {step(last)})" if last is not trough else ""))
@@ -410,7 +455,6 @@ def _report(store: Store, study: str) -> int:
         print(f"    responses shrank {gen[first_ck['run_id']]:.0f} -> {gen[last['run_id']]:.0f} tokens "
               f"({gen[first_ck['run_id']] / gen[last['run_id']]:.0f}x shorter) - it stopped reasoning, "
               "not just got answers wrong")
-    tm = store.training_metrics(study).to_pylist()
     nll = [m for m in tm if m["key"] == "train/nll"]
     if len(nll) >= 2 and collapsed:
         print(f"    train/nll kept falling {nll[0]['value']:.2f} -> {nll[-1]['value']:.2f} "
