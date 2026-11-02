@@ -149,6 +149,7 @@ interface Derived {
     pts: { x: number; y: number }[];
   }[];
   epochStarts: number[];
+  errorSteps: number[];
 }
 
 function derive(detail: StudyDetail): Derived {
@@ -196,6 +197,7 @@ function derive(detail: StudyDetail): Derived {
   const rlSeries = (
     [
       ["env/all/reward/total", "reward", "mean verifiable reward per rollout batch - what the optimizer is actually maximizing", (v: number) => v.toFixed(2)],
+      ["env/all/by_group/frac_mixed", "mixed groups", "fraction of rollout groups with both correct and incorrect samples. Group-centred advantages are zero on all-good or all-bad groups, so this is the share of the batch that carried any gradient signal", (v: number) => `${(v * 100).toFixed(0)}%`],
       ["env/all/ac_tokens_per_turn", "rollout tokens", "action tokens generated per turn during rollouts - drift means the policy changed how much it says on the training distribution", (v: number) => v.toFixed(0)],
       ["optim/entropy", "entropy", "policy entropy over sampled actions - collapse means the policy sharpens onto fewer tokens", (v: number) => v.toFixed(3)],
       ["kl_pre_post_v1", "kl pre/post", "KL of the policy before vs after each optim step - the step size the optimizer actually took", (v: number) => (Math.abs(v) < 1e-3 ? v.toExponential(1) : v.toFixed(4))],
@@ -229,6 +231,15 @@ function derive(detail: StudyDetail): Derived {
     if (st != null) gapByStep.set(st, g);
   }
 
+  // in-loop eval failures are logged as a metric, not an exception - surface them
+  const errorSteps = [
+    ...new Set(
+      Object.keys(m)
+        .filter((x) => x.endsWith("/error"))
+        .flatMap((x) => m[x].filter((r) => r.value > 0).map((r) => r.step)),
+    ),
+  ].sort((a, b) => a - b);
+
   const steps = [...new Set([...pass1.keys(), ...trainSeries.map((s) => s.step)])].sort(
     (a, b) => a - b,
   );
@@ -251,7 +262,7 @@ function derive(detail: StudyDetail): Derived {
     loss: trainSeries.find((s) => s.step === step)?.value,
     effortGap: gapByStep.get(step),
   }));
-  return { rows, metricKeys: Object.keys(m), trainKey, trainSeries, rlSeries, epochStarts };
+  return { rows, metricKeys: Object.keys(m), trainKey, trainSeries, rlSeries, epochStarts, errorSteps };
 }
 
 /** pass@1 vs the train signal: loss on its own right axis for SFT, rollout
@@ -358,6 +369,20 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
               <title>{`epoch ${i + 2} begins (step ${s}) - the optimizer starts another pass over the training set`}</title>
             </line>
           </g>
+        ))}
+        {/* in-loop eval errors land on the x axis as hollow markers */}
+        {d.errorSteps.map((s) => (
+          <circle
+            key={`err${s}`}
+            cx={sx(s)}
+            cy={h - pad - 8}
+            r={4.5}
+            fill="none"
+            style={{ stroke: "var(--neg)" }}
+            strokeWidth={1.4}
+          >
+            <title>{`in-loop eval errored at step ${s}`}</title>
+          </circle>
         ))}
         {lossPath && (
           <path d={lossPath} fill="none" style={{ stroke: "var(--accent2)" }} strokeWidth={1.4} strokeDasharray="4 3" />
@@ -554,13 +579,25 @@ function Narrative({ d, runs }: { d: Derived; runs: Run[] }) {
   // RL studies: reward can move independently of held-out eval - that's the read
   const rewardPts = d.rlSeries.find((s) => s.key.endsWith("/reward/total"))?.pts;
   const tokPts = d.rlSeries.find((s) => s.key === "env/all/ac_tokens_per_turn")?.pts;
+  const fracPts = d.rlSeries.find((s) => s.key === "env/all/by_group/frac_mixed")?.pts;
+  const fracMean = fracPts?.length
+    ? fracPts.reduce((a, p) => a + p.y, 0) / fracPts.length
+    : null;
   const rlBullets: { t: string; href?: string }[] = [];
   let rewardRose = false;
+  let noSignal = false;
   if (rewardPts?.length) {
     const rf = rewardPts[0].y;
     const rl = rewardPts[rewardPts.length - 1].y;
     rewardRose = rl - rf > 0.1;
-    if (rf >= 0.95)
+    if (fracPts && fracMean != null && fracMean < 0.1) {
+      // saturated or uniform groups carry zero advantage either way - the
+      // optimizer had nothing to learn from, which is worse news than a drop
+      noSignal = true;
+      rlBullets.push({
+        t: `only ${(fracMean * 100).toFixed(0)}% of rollout groups were mixed (reward ${rf.toFixed(2)} -> ${rl.toFixed(2)}): group-centred advantages were ~0, the optimizer had almost no signal. Change the env difficulty before spending more`,
+      });
+    } else if (rf >= 0.95)
       rlBullets.push({
         t: `reward saturated from the first batch (${rf.toFixed(2)}): this env gives the policy no gradient signal`,
       });
@@ -578,6 +615,10 @@ function Narrative({ d, runs }: { d: Derived; runs: Run[] }) {
       });
     else rlBullets.push({ t: `rollout reward flat (${rf.toFixed(2)} -> ${rl.toFixed(2)})` });
   }
+  if (d.errorSteps.length)
+    rlBullets.push({
+      t: `in-loop eval errored at step${d.errorSteps.length > 1 ? "s" : ""} ${d.errorSteps.join(", ")} - training continued, check the run log (metrics.jsonl)`,
+    });
   if (tokPts && tokPts.length >= 2) {
     const tf = tokPts[0].y;
     const tl = tokPts[tokPts.length - 1].y;
@@ -593,9 +634,11 @@ function Narrative({ d, runs }: { d: Derived; runs: Run[] }) {
       ? "the fine-tune regressed this eval"
       : improved
         ? "the fine-tune improved this eval"
-        : noisy || peak.pass1! - trough.pass1! <= 0.05
-          ? "no eval-visible change"
-          : "pass@1 dipped mid-training and recovered";
+        : noSignal
+          ? "no learning signal, no eval-visible change"
+          : noisy || peak.pass1! - trough.pass1! <= 0.05
+            ? "no eval-visible change"
+            : "pass@1 dipped mid-training and recovered";
   // did divergence move before the first significant accuracy drop?
   const cliff = evals.find((r) => r.ci && r.ci[1] < 0);
   if (noisy) {
