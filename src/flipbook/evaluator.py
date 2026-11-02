@@ -64,14 +64,18 @@ class RegressionEvaluator(SamplingClientEvaluator):
         self.calls = 0
         self._baseline_rid: str | None = None
         self._resolved = None  # Resolved(base_model, renderer) — once per lifetime
-    async def __call__(self, sampling_client: Any) -> dict[str, float]:
+    async def __call__(
+        self, sampling_client: Any, step: int | None = None
+    ) -> dict[str, float]:
         name = f"flipbook/{self.manifest_name}"
         try:
-            return await self._run(sampling_client, name)
+            return await self._run(sampling_client, name, step)
         except Exception:  # the loop must never see eval failures
             log.exception("flipbook eval failed")
             return {f"{name}/error": 1.0}
-    async def _run(self, sampling_client: Any, name: str) -> dict[str, float]:
+    async def _run(
+        self, sampling_client: Any, name: str, step: int | None = None
+    ) -> dict[str, float]:
         # no public accessor for the weights path; the submit response
         # carries it (verified in the instrument check)
         model_path = (await sampling_client._get_sampler_submit()).model_path
@@ -86,16 +90,29 @@ class RegressionEvaluator(SamplingClientEvaluator):
             sc = tinker.ServiceClient() if model_path.startswith("tinker://") else None
             self._resolved = await resolve_model(model_path, service_client=sc)
         manifest = Manifest.load(self.store, self.manifest_name)
-        step = self.calls * self.eval_every
+        if step is None:
+            step = self.calls * self.eval_every
         self.calls += 1
         self._check_step_alignment(step, model_path)
+        # step-0 weights ARE the base model: billing this eval as the baseline
+        # (same config a `flipbook eval --model <base> --label baseline` run
+        # produces) stops _ensure_baseline from sampling it a second time.
+        # The run keeps train_step None so the API/GUI read it as baseline.
+        as_baseline = (
+            step == 0
+            and self._canonical_path(model_path, step) == self._resolved.base_model
+            and not self._baseline_rid
+            and self._baseline_is_model_name()
+        )
         run_ids = {}
         for eff in self.efforts:
             cfg = RunConfig(
-                model=model_path, manifest_hash=manifest.manifest_hash,
+                model=self._resolved.base_model if as_baseline else model_path,
+                manifest_hash=manifest.manifest_hash,
                 effort=eff, temperature=self.temperature,
                 max_tokens=self.max_tokens, k=self.k, seed=self.seed,
-                renderer=self._resolved.renderer, study=self.study, label=f"step{step}",
+                renderer=self._resolved.renderer, study=self.study,
+                label="baseline" if as_baseline and eff == self.efforts[0] else f"step{step}",
             )
             await evaluate_async(
                 cfg, self.store, concurrency=self.concurrency,
@@ -103,7 +120,11 @@ class RegressionEvaluator(SamplingClientEvaluator):
             )
             rid = run_id(cfg)
             run_ids[eff] = rid
-            self._patch_provenance(rid, step, model_path)
+            if as_baseline:
+                if eff == self.efforts[0]:
+                    self._baseline_rid = rid
+            else:
+                self._patch_provenance(rid, step, model_path)
         rid = run_ids[self.efforts[0]]
         baseline_rid = await self._ensure_baseline(manifest)
         pair = compare(self.store, baseline_rid, rid)
@@ -190,6 +211,12 @@ class RegressionEvaluator(SamplingClientEvaluator):
                              log=lambda m: log.info(m))
         self._baseline_rid = run_id(cfg)
         return self._baseline_rid
+    def _baseline_is_model_name(self) -> bool:
+        try:
+            self.store.resolve_run(self.baseline)
+            return False
+        except LookupError:
+            return True
     def _canonical_path(self, model_path: str, step: int) -> str:
         # ephemeral eval samplers (sampler_weights/ephemeral_N) don't survive
         # server-side; the durable artifact is the numbered checkpoint. Step 0

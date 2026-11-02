@@ -114,3 +114,35 @@ def test_evaluator_baseline_via_model_name(tmp_path, monkeypatch):
     assert metrics["flipbook/m/delta_vs_base"] == 0.0
     assert ev._baseline_rid is not None
     assert len(list((store.path / "runs").glob("*.json"))) == 1
+
+
+def test_step0_eval_is_the_baseline(tmp_path, monkeypatch):
+    # step-0 weights are the untouched base model: billing that eval as the
+    # baseline keeps _ensure_baseline from sampling the same model twice
+    store, _m = _store_with_manifest(tmp_path)
+    fake = FakeSampler(_cont_tokens())
+    import json
+
+    import flipbook.evaluator as evmod
+    real = evmod.evaluate_async
+    seen = []
+
+    async def with_fake(cfg, store, **kw):
+        seen.append(cfg.label)
+        kw.setdefault("sampling_client", fake)
+        return await real(cfg, store, **kw)
+
+    monkeypatch.setattr(evmod, "evaluate_async", with_fake)
+    ev = RegressionEvaluator(
+        manifest="m", baseline=MODEL, store=store, eval_every=8,
+        k=2, temperature=0.0, max_tokens=256,
+        diverge=False, effort_pair=None,
+    )
+    metrics = asyncio.run(ev(fake))
+    assert seen == ["baseline"]  # exactly one eval, under the baseline label
+    runs = [json.loads(f.read_text()) for f in (store.path / "runs").glob("*.json")]
+    assert len(runs) == 1
+    assert runs[0]["label"] == "baseline"
+    assert runs[0].get("train_step") is None  # API/GUI identify baseline this way
+    assert metrics["flipbook/m/pass1"] == 1.0
+    assert metrics["flipbook/m/delta_vs_base"] == 0.0
