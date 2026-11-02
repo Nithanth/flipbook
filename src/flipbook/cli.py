@@ -631,6 +631,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_store(p)
     p = Sub("budget", help="token/cost distribution for a run", epilog=_RUN_REF_EPILOG)
     p.add_argument("run").completer = _complete_run_ref
+    p.add_argument("--json", action="store_true")
     _add_store(p)
     p = Sub("show", help="inspect one row's samples in a run", epilog=_RUN_REF_EPILOG)
     p.add_argument("run", help="run id, prefix, study/label, or label").completer = _complete_run_ref
@@ -981,8 +982,11 @@ def main(argv: list[str] | None = None) -> int:
         rec = _run_rec(store, args.run)
         try:
             row = store.resolve_row(rec["manifest_hash"], args.row)
-        except LookupError as e:
-            raise SystemExit(str(e)) from e
+        except LookupError:
+            ids = [r["row_id"] for r in store.manifest_rows(rec["manifest_hash"])]
+            raise SystemExit(f"no row matches {args.row!r} - rows in this "
+                             f"manifest: {', '.join(ids[:8])}"
+                             + (f" ... (+{len(ids)-8})" if len(ids) > 8 else ""))
         tbl = store.samples(rec["run_id"])
         samples = sorted(
             (r for r in tbl.to_pylist() if r["row_id"] == row["row_id"]),
@@ -1039,7 +1043,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "budget":
         store = _store(args)
         b = budget(store, _run_id(store, args.run))
-        print(json.dumps(b.__dict__, indent=2))
+        print(f"{b.n_samples} samples · {b.n_truncated} truncated · "
+              f"gen tok p50 {b.gen_p50:.0f} / p95 {b.gen_p95:.0f} / max {b.gen_max} · "
+              f"prompt {b.total_prompt_tokens:,} tok · gen {b.total_gen_tokens:,} tok"
+              + (f" · ~${b.est_cost_usd:.2f}" if b.est_cost_usd is not None else ""))
+        if args.json:
+            print(json.dumps(b.__dict__, indent=2))
         return 0
     if args.cmd == "compare":
         store = _store(args)
@@ -1075,7 +1084,10 @@ def main(argv: list[str] | None = None) -> int:
                       f"`{f['row_id']}` {f['p_a']:.2f} → {f['p_b']:.2f}{q}")
         else:
             a = pair.agreement
-            print(f"{pair.run_a} acc={pair.acc_a:.3f}  vs  {pair.run_b} acc={pair.acc_b:.3f}")
+            ra, rb = store.resolve_run(pair.run_a), store.resolve_run(pair.run_b)
+            ref = lambda r: f"{r.get('study')}/{r.get('label')}" if r.get("study") and r.get("label") else r["run_id"]
+            print(f"{ref(ra)} ({pair.run_a}) acc={pair.acc_a:.3f}  vs  "
+                  f"{ref(rb)} ({pair.run_b}) acc={pair.acc_b:.3f}")
             print(f"delta {pair.delta:+.3f}  CI [{pair.delta_ci[0]:+.3f}, {pair.delta_ci[1]:+.3f}]"
                   f"  on {pair.n_pairs} paired rows ({len(pair.excluded)} excluded)")
             print(f"agreement: both {a['both_right']}/{a['both_wrong']} "
