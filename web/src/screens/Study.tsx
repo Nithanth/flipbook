@@ -11,8 +11,6 @@ export default function Study() {
   );
   const [detail, setDetail] = useState<StudyDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [overlayName, setOverlayName] = useState("");
-  const [overlay, setOverlay] = useState<StudyDetail | null>(null);
 
   useEffect(() => {
     Promise.all([api.studies(), api.runs()]).then(([ss, rs]) => {
@@ -48,20 +46,7 @@ export default function Study() {
     return () => clearInterval(t);
   }, [study]);
 
-  // overlay: same-axis pass@1 of a second study (e.g. two model sizes, one recipe)
-  useEffect(() => {
-    if (!overlayName) {
-      setOverlay(null);
-      return;
-    }
-    api.study(overlayName).then(setOverlay).catch(() => setOverlay(null));
-  }, [overlayName]);
-
   const derived = useMemo(() => (detail ? derive(detail) : null), [detail]);
-  const ghost = useMemo(
-    () => (overlay ? derive(overlay).rows.filter((r) => r.pass1 != null) : []),
-    [overlay],
-  );
   const [focus, setFocus] = useState<string | null>(null);
   const [touched, setTouched] = useState<Date | null>(null);
 
@@ -98,17 +83,6 @@ export default function Study() {
             {touched ? ` · live · updated ${touched.toLocaleTimeString()}` : ""}
           </span>
         )}
-        {detail && detail.runs.length > 1 && studies.length > 1 && (
-          <label>
-            overlay{" "}
-            <select value={overlayName} onChange={(e) => setOverlayName(e.target.value)}>
-              <option value="">none</option>
-              {studies.filter((s) => s !== study).map((s) => (
-                <option key={s}>{s}</option>
-              ))}
-            </select>
-          </label>
-        )}
       </div>
       {err && <p className="err">{err}</p>}
       {detail && derived && derived.rows.length === 0 && (
@@ -123,7 +97,7 @@ export default function Study() {
       )}
       {detail && derived && derived.rows.length > 0 && (
         <>
-          <Hero d={derived} go={go} ghost={ghost} ghostName={overlayName} />
+          <Hero d={derived} go={go} />
           <Narrative d={derived} runs={detail.runs} />
           <MetricStrip d={derived} focus={focus} onFocus={setFocus} go={go} />
           <StepTable d={derived} runs={detail.runs} />
@@ -280,25 +254,14 @@ function derive(detail: StudyDetail): Derived {
   return { rows, metricKeys: Object.keys(m), trainKey, trainSeries, rlSeries, epochStarts };
 }
 
-/** pass1 (left axis) vs train loss (right axis) - the collision chart.
- *  `ghost` overlays another study's pass@1 on the same axis - the "did the
- *  same recipe break two models the same way" view. */
-function Hero({
-  d,
-  go,
-  ghost = [],
-  ghostName = "",
-}: {
-  d: Derived;
-  go: (step: number) => void;
-  ghost?: StepRow[];
-  ghostName?: string;
-}) {
+/** pass@1 vs the train signal: loss on its own right axis for SFT, rollout
+ *  reward sharing the 0-1 eval axis for RL - the collision chart. */
+function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
   const [hover, setHover] = useState<number | null>(null);
   const pts = d.rows.filter((r) => r.pass1 != null);
-  // rewards are correctness fractions: fixed [0,1] axis; loss scales to max
+  // rewards are correctness fractions: they share the [0,1] eval axis
   const isReward = d.trainKey?.kind === "reward";
-  const lossMax = isReward ? 1 : Math.max(1e-9, ...d.trainSeries.map((s) => s.value));
+  const lossMax = Math.max(1e-9, ...d.trainSeries.map((s) => s.value));
   if (!pts.length) return <p className="sub">no eval metrics for this study</p>;
 
   const w = 860;
@@ -307,7 +270,6 @@ function Hero({
   const allSteps = [
     ...pts.map((r) => r.step),
     ...d.trainSeries.map((s) => s.step),
-    ...ghost.map((r) => r.step),
   ];
   const x0 = Math.min(...allSteps);
   const x1 = Math.max(...allSteps);
@@ -317,12 +279,13 @@ function Hero({
   // 1-indexed data pass containing this step (boundaries are where the
   // logged epoch counter ticks up)
   const epochAt = (s: number) => 1 + d.epochStarts.filter((e) => e <= s).length;
-  const syLoss = (y: number) => h - pad - (y / lossMax) * (h - 2 * pad);
+  const syLoss = isReward
+    ? syPass
+    : (y: number) => h - pad - (y / lossMax) * (h - 2 * pad);
+  // signed percentage points, for CI text
+  const pp = (v: number) => `${v >= 0 ? "+" : ""}${(v * 100).toFixed(1)}`;
 
   const passPath = pts.map((r, i) => `${i ? "L" : "M"}${sx(r.step)},${syPass(r.pass1!)}`).join(" ");
-  const ghostPath = ghost
-    .map((r, i) => `${i ? "L" : "M"}${sx(r.step)},${syPass(r.pass1!)}`)
-    .join(" ");
   const lossPath = d.trainSeries
     .map((r, i) => `${i ? "L" : "M"}${sx(r.step)},${syLoss(r.value)}`)
     .join(" ");
@@ -369,7 +332,9 @@ function Hero({
       >
         <line x1={pad} x2={w - pad} y1={h - pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
         <line x1={pad} x2={pad} y1={pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
-        <line x1={w - pad} x2={w - pad} y1={pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
+        {!isReward && (
+          <line x1={w - pad} x2={w - pad} y1={pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
+        )}
         {/* mid gridline at 50% pass + x ticks */}
         <line x1={pad} x2={w - pad} y1={syPass(0.5)} y2={syPass(0.5)} style={{ stroke: "var(--border)" }} strokeDasharray="2 5" strokeOpacity={0.7} />
         {xticks.map((x) => (
@@ -397,24 +362,27 @@ function Hero({
         {lossPath && (
           <path d={lossPath} fill="none" style={{ stroke: "var(--accent2)" }} strokeWidth={1.4} strokeDasharray="4 3" />
         )}
-        {ghostPath && (
-          <>
-            <path
-              d={ghostPath}
-              fill="none"
-              style={{ stroke: "var(--warn)" }}
-              strokeWidth={1.6}
-              strokeDasharray="6 4"
-              strokeLinejoin="round"
-            />
-            {ghost.map((r) => (
-              <circle key={`g${r.step}`} cx={sx(r.step)} cy={syPass(r.pass1!)} r={3.5}
-                fill="none" style={{ stroke: "var(--warn)" }} strokeWidth={1.4}>
-                <title>{`${ghostName}: step ${r.step} pass1 ${(r.pass1! * 100).toFixed(1)}%`}</title>
-              </circle>
-            ))}
-          </>
-        )}
+        {/* paired-CI whiskers on eval points, under the line so dots stay readable */}
+        {pts
+          .filter((r) => r.delta != null && r.ci)
+          .map((r) => {
+            const lo = Math.max(0, Math.min(1, r.pass1! - (r.delta! - r.ci![0])));
+            const hi = Math.max(0, Math.min(1, r.pass1! + (r.ci![1] - r.delta!)));
+            const x = sx(r.step);
+            return (
+              <g
+                key={`ci${r.step}`}
+                style={{ stroke: "var(--accent)" }}
+                strokeOpacity={0.45}
+                strokeWidth={1.2}
+              >
+                <line x1={x} x2={x} y1={syPass(lo)} y2={syPass(hi)} />
+                <line x1={x - 3} x2={x + 3} y1={syPass(lo)} y2={syPass(lo)} />
+                <line x1={x - 3} x2={x + 3} y1={syPass(hi)} y2={syPass(hi)} />
+                <title>{`step ${r.step}: 95% paired CI on delta vs base [${pp(r.ci![0])}, ${pp(r.ci![1])}] pp`}</title>
+              </g>
+            );
+          })}
         <path d={passPath} fill="none" style={{ stroke: "var(--accent)" }} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
         {pts.map((r) => (
           <circle
@@ -464,10 +432,10 @@ function Hero({
               lines={[
                 [`step ${hover} · epoch ${epochAt(hover)}`, "var(--text)", true],
                 ...(hovRow
-                  ? ([[`pass@1 ${(hovRow.pass1! * 100).toFixed(1)}%`, "var(--accent)", false]] as [string, string, boolean][])
+                  ? ([[`pass@1 ${(hovRow.pass1! * 100).toFixed(1)}%${hovRow.delta != null && hovRow.ci ? `  CI [${pp(hovRow.ci[0])}, ${pp(hovRow.ci[1])}] pp` : ""}`, "var(--accent)", false]] as [string, string, boolean][])
                   : []),
                 ...(hovLoss != null
-                  ? ([[`${isReward ? "rwd" : "nll"}  ${hovLoss.toPrecision(3)}`, "var(--accent2)", false]] as [string, string, boolean][])
+                  ? ([[`${isReward ? "reward" : "nll"}  ${isReward ? hovLoss.toFixed(2) : hovLoss.toPrecision(3)}`, "var(--accent2)", false]] as [string, string, boolean][])
                   : []),
               ]}
             />
@@ -475,11 +443,9 @@ function Hero({
         )}
         <text x={6} y={pad} style={{ fill: "var(--accent)" }} fontSize={11}>100%</text>
         <text x={6} y={h - pad} style={{ fill: "var(--accent)" }} fontSize={11}>0%</text>
-        {d.trainSeries.length > 0 && (
+        {d.trainSeries.length > 0 && !isReward && (
           <>
-            <text x={w - pad + 6} y={pad} style={{ fill: "var(--accent2)" }} fontSize={11}>
-              {isReward ? "1" : lossMax.toPrecision(2)}
-            </text>
+            <text x={w - pad + 6} y={pad} style={{ fill: "var(--accent2)" }} fontSize={11}>{lossMax.toPrecision(2)}</text>
             <text x={w - pad + 6} y={h - pad} style={{ fill: "var(--accent2)" }} fontSize={11}>0</text>
           </>
         )}
@@ -491,17 +457,17 @@ function Hero({
         <Tip text="Fraction of frozen eval questions answered correctly at this checkpoint (left axis). Click a point to compare that step against baseline.">
           <span style={{ color: "var(--accent)" }}>━ pass@1 (click a point)</span>
         </Tip>
-        {ghost.length > 0 && (
-          <Tip text={`pass@1 of study '${ghostName}' overlaid on the same step axis - same recipe, different run.`}>
-            <span style={{ color: "var(--warn)" }}>┅ {ghostName}</span>
+        {pts.some((r) => r.delta != null && r.ci) && (
+          <Tip text="Bootstrap 95% CI of the paired per-question delta vs baseline, drawn around each point. If the whisker crosses the baseline's level, the change is within noise.">
+            <span style={{ color: "var(--accent)" }}>┃ 95% CI</span>
           </Tip>
         )}
         {d.trainKey && (
-          <Tip text={`${d.trainKey.key}: ${
+          <Tip text={
             isReward
-              ? "mean rollout reward on the training env (right axis, 0-1). It can saturate while held-out eval never moves"
-              : "training loss on the fine-tuning batches - what the optimizer sees (right axis). It can keep falling while eval behavior collapses; that's the collision this chart exists to show"
-          }. Logged every optimizer step (one batch); evals run every ${evalGap ?? "?"} steps.`}>
+              ? `${d.trainKey.key}: mean rollout reward on the training env, same 0-1 axis as pass@1 - what the optimizer sees vs what you care about. It can saturate while held-out eval never moves`
+              : `${d.trainKey.key}: training loss on the fine-tuning batches - what the optimizer sees (right axis). It can keep falling while eval behavior collapses; that's the collision this chart exists to show. Logged every optimizer step (one batch); evals run every ${evalGap ?? "?"} steps.`
+          }>
             <span style={{ color: "var(--accent2)" }}>┅ {d.trainKey.label}</span>
           </Tip>
         )}
@@ -740,33 +706,39 @@ function MetricStrip({
     ["skip prob", "The model's own probability of ending the response immediately (end-of-message as the first token). Rising = it increasingly wants to emit nothing.", (r) => r.pSkip, (v) => `${(v * 100).toFixed(1)}%`],
     ["eval cost", "Sampling cost of this eval point, in USD.", (r) => r.cost, (v) => `$${v.toFixed(2)}`],
   ];
-  const cards = [
-    ...evalCards.map(([label, tip, get, fmt]) => ({
+  const evalGroup = evalCards
+    .map(([label, tip, get, fmt]) => ({
       label,
       tip,
       fmt,
       pts: d.rows.filter((r) => get(r) != null).map((r) => ({ x: r.step, y: get(r)! })),
-    })),
-    ...d.rlSeries,
-  ];
-  const sel = cards.find((c) => c.label === focus);
+    }))
+    .filter((c) => c.pts.length >= 2);
+  const rlGroup = d.rlSeries.filter((c) => c.pts.length >= 2);
+  const sel = [...evalGroup, ...rlGroup].find((c) => c.label === focus);
+  const card = (c: (typeof evalGroup)[number]) => (
+    <div
+      className={focus === c.label ? "mini sel" : "mini"}
+      key={c.label}
+      onClick={() => onFocus(focus === c.label ? null : c.label)}
+    >
+      <div className="mini-label"><Tip text={c.tip}>{c.label}</Tip></div>
+      <TinySeries pts={c.pts} />
+      <div className="mini-val">{c.fmt(c.pts[c.pts.length - 1].y)}</div>
+    </div>
+  );
   return (
     <>
-      <div className="strip">
-        {cards.map((c) => (
-          <div
-            className={focus === c.label ? "mini sel" : "mini"}
-            key={c.label}
-            onClick={() => onFocus(focus === c.label ? null : c.label)}
-          >
-            <div className="mini-label"><Tip text={c.tip}>{c.label}</Tip></div>
-            <TinySeries pts={c.pts} />
-            <div className="mini-val">
-              {c.pts.length ? c.fmt(c.pts[c.pts.length - 1].y) : "-"}
-            </div>
-          </div>
-        ))}
+      <div className="strip-group">
+        <div className="mini-label">held-out eval</div>
+        <div className="strip">{evalGroup.map(card)}</div>
       </div>
+      {rlGroup.length > 0 && (
+        <div className="strip-group">
+          <div className="mini-label">training</div>
+          <div className="strip">{rlGroup.map(card)}</div>
+        </div>
+      )}
       {sel && (
         <FocusChart
           key={sel.label}
@@ -1003,7 +975,8 @@ function StepTable({ d, runs }: { d: Derived; runs: Run[] }) {
                 </td>
                 <td>{r.pass1 != null ? `${(r.pass1 * 100).toFixed(1)}%` : "-"}</td>
                 <td>{r.passK != null ? `${(r.passK * 100).toFixed(1)}%` : "-"}</td>
-                <td className={r.delta != null && r.delta < 0 ? "neg" : "pos"}>
+                {/* colour only when the CI excludes zero; a delta inside the noise band is not a verdict */}
+                <td className={r.ci && r.ci[1] < 0 ? "neg" : r.ci && r.ci[0] > 0 ? "pos" : undefined}>
                   {r.delta != null
                     ? `${r.delta >= 0 ? "+" : ""}${r.delta.toFixed(2)} [${r.ci?.[0].toFixed(2)}, ${r.ci?.[1].toFixed(2)}]`
                     : "-"}
