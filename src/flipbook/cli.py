@@ -337,7 +337,7 @@ def _run_cost(store: Store, r: dict) -> float:
     return sum(v or 0 for v in col.to_pylist())
 
 
-def _report(store: Store, study: str) -> int:
+def _report(store: Store, study: str, as_json: bool = False) -> int:
     """'The read' as a terminal summary: the pass@1 arc, whether divergence
     moved first, response-length collapse, and total cost."""
     runs = [r for r in store.study_runs(study)]
@@ -371,9 +371,8 @@ def _report(store: Store, study: str) -> int:
             _p1[rid] = p
         return _p1[rid]
 
-    print(f"report: {study}")
+    bullets: list[str] = []
     arc = [f"{pass1(base):.2f}"] + [f"{pass1(r):.2f} (step {step(r)})" for r in ckpts]
-    print(f"  pass@1: {' -> '.join(arc)}")
 
     tm = store.training_metrics(study).to_pylist()
     def _mseries(key):
@@ -384,7 +383,9 @@ def _report(store: Store, study: str) -> int:
     if reward:
         tok = (f" · rollout tokens/turn {rtok[0][1]:.0f} -> {rtok[-1][1]:.0f}"
                if rtok else "")
-        print(f"  reward: {reward[0][1]:.2f} -> {reward[-1][1]:.2f}{tok}")
+        reward_line = f"{reward[0][1]:.2f} -> {reward[-1][1]:.2f}{tok}"
+    else:
+        reward_line = None
 
     # mean divergence + p_skip per checkpoint from its parquet, if computed
     divdir = store.path / "divergence"
@@ -414,40 +415,39 @@ def _report(store: Store, study: str) -> int:
                else "the fine-tune regressed this eval" if collapsed
                else "the fine-tune improved this eval" if improved
                else "no eval-visible change")
-    print(f"\n  the read: {verdict}")
     if reward:
         rf, rl = reward[0][1], reward[-1][1]
         if rf >= 0.95:
-            print(f"    reward saturated from the first batch ({rf:.2f}): "
+            bullets.append(f"reward saturated from the first batch ({rf:.2f}): "
                   "this env gives the policy no gradient signal")
         elif reward_rose and collapsed:
-            print(f"    rollout reward rose {rf:.2f} -> {rl:.2f} while held-out "
+            bullets.append(f"rollout reward rose {rf:.2f} -> {rl:.2f} while held-out "
                   "pass@1 fell: the policy is fitting the reward, not the capability")
         elif reward_rose and improved:
-            print(f"    reward and held-out pass@1 rose together ({rf:.2f} -> {rl:.2f}, "
+            bullets.append(f"reward and held-out pass@1 rose together ({rf:.2f} -> {rl:.2f}, "
                   f"{pass1(base):.2f} -> {pass1(last):.2f})")
         elif reward_rose:
-            print(f"    rollout reward rose {rf:.2f} -> {rl:.2f}; held-out pass@1 "
+            bullets.append(f"rollout reward rose {rf:.2f} -> {rl:.2f}; held-out pass@1 "
                   "unchanged: no transfer to the eval either way")
         else:
-            print(f"    rollout reward flat ({rf:.2f} -> {rl:.2f})")
+            bullets.append(f"rollout reward flat ({rf:.2f} -> {rl:.2f})")
     if rtok and abs(rtok[-1][1] - rtok[0][1]) / rtok[0][1] > 0.2:
-        print(f"    rollouts {'shortened' if rtok[-1][1] < rtok[0][1] else 'lengthened'} "
+        bullets.append(f"rollouts {'shortened' if rtok[-1][1] < rtok[0][1] else 'lengthened'} "
               f"{rtok[0][1]:.0f} -> {rtok[-1][1]:.0f} tokens per turn on the "
               "training distribution")
     if not collapsed and not improved and pair.n_pairs and abs(pair.delta) >= 0.05:
-        print(f"    pass@1 {pass1(base):.2f} -> {pass1(last):.2f} by step {step(last)}, "
+        bullets.append(f"pass@1 {pass1(base):.2f} -> {pass1(last):.2f} by step {step(last)}, "
               f"but the CI [{pair.delta_ci[0]:+.2f}, {pair.delta_ci[1]:+.2f}] includes zero: "
               f"within noise at n={pair.n_pairs}")
     if collapsed:
-        print(f"    pass@1 {pass1(base):.2f} -> {pass1(trough):.2f} by step {step(trough)}"
+        bullets.append(f"pass@1 {pass1(base):.2f} -> {pass1(trough):.2f} by step {step(trough)}"
               + (f", ending {pass1(last):.2f} (step {step(last)})" if last is not trough else ""))
     if collapsed:
         early = [r for r in ckpts if r["run_id"] in div and div[r["run_id"]]["nats"] < -50]
         cliff = next((r for r in ckpts if pass1(r) < pass1(base) - 0.05), None)
         if early and cliff and step(early[0]) <= step(cliff):
             d = div[early[0]["run_id"]]
-            print(f"    divergence moved early: {d['nats']:.0f} nats, p_skip {d['p_skip']:.0%} "
+            bullets.append(f"divergence moved early: {d['nats']:.0f} nats, p_skip {d['p_skip']:.0%} "
                   f"at step {step(early[0])}")
     gen = {}
     for r in (first_ck, last):
@@ -455,16 +455,37 @@ def _report(store: Store, study: str) -> int:
         gen[r["run_id"]] = sum(x["gen_tokens"] for x in s) / len(s) if s else 0
     if (gen[first_ck["run_id"]] and gen[last["run_id"]]
             and gen[last["run_id"]] / gen[first_ck["run_id"]] < 0.4):
-        print(f"    responses shrank {gen[first_ck['run_id']]:.0f} -> {gen[last['run_id']]:.0f} tokens "
+        bullets.append(f"responses shrank {gen[first_ck['run_id']]:.0f} -> {gen[last['run_id']]:.0f} tokens "
               f"({gen[first_ck['run_id']] / gen[last['run_id']]:.0f}x shorter) - it stopped reasoning, "
               "not just got answers wrong")
     nll = [m for m in tm if m["key"] == "train/nll"]
     if len(nll) >= 2 and collapsed:
-        print(f"    train/nll kept falling {nll[0]['value']:.2f} -> {nll[-1]['value']:.2f} "
+        bullets.append(f"train/nll kept falling {nll[0]['value']:.2f} -> {nll[-1]['value']:.2f} "
               "while eval fell - the loss never saw it")
     spend = sum(_run_cost(store, r) for r in runs)
+    compare_ref = f"{study}/{base.get('label')} {study}/{last.get('label')}"
+    if as_json:
+        # the same read as a payload: verdict + evidence, for a notifier or a bot
+        print(json.dumps({
+            "study": study, "verdict": verdict, "bullets": bullets,
+            "pass1": [{"step": 0, "value": pass1(base), "run_id": base["run_id"]}]
+                     + [{"step": step(r), "value": pass1(r), "run_id": r["run_id"]} for r in ckpts],
+            "delta": pair.delta if pair.n_pairs else None,
+            "delta_ci": list(pair.delta_ci) if pair.n_pairs else None,
+            "reward": reward_line, "cost_usd": round(spend, 2), "n_runs": len(runs),
+            "compare": f"flipbook compare {compare_ref}",
+            "inspect": f"#/study?name={study}",
+        }, indent=2))
+        return 0
+    print(f"report: {study}")
+    print(f"  pass@1: {' -> '.join(arc)}")
+    if reward_line:
+        print(f"  reward: {reward_line}")
+    print(f"\n  the read: {verdict}")
+    for t in bullets:
+        print(f"    {t}")
     print(f"\n  cost: ~${spend:.2f} across {len(runs)} runs")
-    print(f"  compare: flipbook compare {study}/{base.get('label')} {study}/{last.get('label')}")
+    print(f"  compare: flipbook compare {compare_ref}")
     print(f"  inspect: flipbook serve  ->  #/study?name={study}")
     return 0
 
@@ -623,6 +644,7 @@ def main(argv: list[str] | None = None) -> int:
     _add_store(p)
     p = Sub("report", help="'the read' for a study as a terminal summary")
     p.add_argument("study").completer = _complete_study
+    p.add_argument("--json", action="store_true", help="verdict + bullets as a payload")
     _add_store(p)
 
     p = Sub("runs", aliases=["evals"], help="list eval runs in the store")
@@ -881,7 +903,7 @@ def main(argv: list[str] | None = None) -> int:
                   f"{str(d.get('created_at', '-'))[:10]}")
         return 0
     if args.cmd == "report":
-        return _report(_store(args), args.study)
+        return _report(_store(args), args.study, as_json=args.json)
     if args.cmd == "status":
         store = _store(args)
         runs = store.runs()

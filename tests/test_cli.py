@@ -92,6 +92,20 @@ def test_report_skips_runs_still_sampling(tmp_path, capsys):
     assert "step 5" in out
 
 
+def test_report_json_is_the_same_read(tmp_path, capsys):
+    import json
+    store = Store(tmp_path)
+    _study(store, [1] * 20, [0] * 20)
+    _report(store, "s")
+    text = capsys.readouterr().out
+    _report(store, "s", as_json=True)
+    d = json.loads(capsys.readouterr().out)
+    assert d["verdict"] in text
+    assert all(b in text for b in d["bullets"])
+    assert [p["step"] for p in d["pass1"]] == [0, 5]
+    assert d["delta_ci"][1] < 0 and d["compare"].startswith("flipbook compare s/")
+
+
 def _status_study(store):
     # baseline + step0 (the base weights again) + step5, nothing scored yet
     store.put_run({"run_id": "b", "study": "s", "manifest_hash": "mh",
