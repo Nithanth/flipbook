@@ -131,7 +131,7 @@ def seed_synthetic(store: Store, *, seed: int = 0) -> str:
                     "run_id": rid, "row_id": r["row_id"], "sample_idx": sidx,
                     "text": text, "prompt_tokens": rng.randint(80, 140),
                     "gen_tokens": gtok,
-                    "stop_reason": "max_tokens" if fk == "truncation" else "stop",
+                    "stop_reason": "length" if fk == "truncation" else "stop",
                     "verdict": 1.0 if ok else 0.0, "extracted": ext,
                     "failure_kind": fk, "grade_note": None, "error": None,
                     "est_cost_usd": gtok * 2e-6,

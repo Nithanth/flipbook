@@ -478,7 +478,10 @@ workflow
   1. freeze    build a manifest: frozen questions + golds + grader_ids
   2. eval      sample a model over it (a spend forecast prints first);
                `flipbook eval sft/final` resolves a study checkpoint ref
-  +. train     `flipbook train sft|rl` = a recipe with in-loop evals
+  +. train     `flipbook train sft|rl` = example recipes with in-loop
+               evals; for your own loop add `RegressionEvaluator`
+               (flipbook.evaluator) to evaluator_builders, or
+               `flipbook track <log dir>` a finished run
   3. compare   paired stats and flips between two runs
   4. diverge   per-token logprob gap of a checkpoint on base traces
   5. serve     read-only API + browser UI over the store
@@ -493,9 +496,9 @@ walkthrough
       --manifest aime30 --effort 0.5 --label baseline
   flipbook eval sft/final          # terse form: ref resolves the checkpoint
                                    # path and inherits manifest/effort/k/...
-  flipbook compare baseline sft/step56
+  flipbook compare sft/baseline sft/step56
   flipbook show sft/step56 <row_id>
-  flipbook diverge --base baseline --ckpt sft/step56
+  flipbook diverge --base sft/baseline --ckpt sft/step56
   flipbook serve      # opens the GUI at localhost:8484
 
 inspecting
@@ -743,6 +746,7 @@ def main(argv: list[str] | None = None) -> int:
             print("\nnumbers are invented - they demo the workflow, not a real model.")
             print("\nnext:")
             print("  flipbook status                                   # coverage gaps")
+            print(f"  flipbook report {study:<33} # the read")
             print(f"  flipbook compare {study}/baseline {study}/step24   # the cliff")
             print("  flipbook serve                                    # inspect in the GUI")
             return 0
@@ -887,51 +891,61 @@ def main(argv: list[str] | None = None) -> int:
         studies: dict[str, list[dict]] = {}
         for r in runs:
             studies.setdefault(r.get("study") or "-", []).append(r)
+        def step(r):
+            # a checkpoint's step: the ref-resolved train_step when recorded,
+            # else the step the in-loop evaluator measured
+            return (r.get("train_step") if r.get("train_step") is not None
+                    else (r.get("provenance") or {}).get("train_step_measured"))
         for name, rs in sorted(studies.items()):
             if name != "-":
                 rs = store.study_runs(name)
-            ckpts = sorted(
-                (
-                    r
-                    for r in rs
-                    if (r.get("provenance") or {}).get("train_step_measured") is not None
-                ),
-                key=lambda r: r["provenance"]["train_step_measured"],
-            )
-            base = next(
-                (r for r in rs if (r.get("provenance") or {}).get("train_step_measured") is None),
-                None,
-            )
+            ckpts = sorted((r for r in rs if step(r) is not None), key=step)
+            # the divergence base is the untrained model: a run stamped with
+            # neither an in-loop measured step nor a ref-resolved train_step
+            base = next((r for r in rs if step(r) is None), None)
             mans = {mnames.get(r.get("manifest_hash"), str(r.get("manifest_hash"))[:12]) for r in rs}
             live = sum(1 for r in rs if r.get("state") == "running")
             sspend = sum(_run_cost(store, r) for r in rs)
             print(f"\n{name} - {len(rs)} runs on {', '.join(sorted(mans))}"
                   + (f" · ~${sspend:.2f}" if sspend else "")
                   + (f"  ({live} still sampling)" if live else ""))
+            # a shared label makes 'study/label' refs ambiguous
+            label_counts: dict[str, int] = {}
+            for r in rs:
+                if r.get("label"):
+                    label_counts[r["label"]] = label_counts.get(r["label"], 0) + 1
+            for lab in sorted(l for l, n in label_counts.items() if n > 1):
+                print(f"  warning: duplicate label {lab!r} - use run_id refs")
             if not ckpts:
                 continue
-            steps = [r["provenance"]["train_step_measured"] for r in ckpts]
+            steps = [step(r) for r in ckpts]
             print(f"  checkpoints  {len(ckpts)} (steps {steps[0]}..{steps[-1]})")
             divdir, effdir = store.path / "divergence", store.path / "effort"
             have_div = {r["run_id"] for r in ckpts
                         if any(divdir.glob(f"*__{r['run_id']}.parquet"))}
             have_eff = {r["run_id"] for r in ckpts
                         if any(effdir.glob(f"{r['run_id']}__*.parquet"))}
-            # reuse the pair this study already uses, e.g. run__0.2_0.9.parquet
+            # reuse the pair this study already uses, e.g. run__0.2_0.9.parquet;
+            # the fallback is the RegressionEvaluator default pair
             pair = next(
                 (f.stem.split("__")[1] for r in ckpts
                  for f in effdir.glob(f"{r['run_id']}__*.parquet")),
-                "LOW,HIGH",
+                "0.2_0.9",
             ).replace("_", ",")
             for kind, have, hint in (
                 ("divergence", have_div, "diverge --base {b} --ckpt {c}"),
                 ("effort gap", have_eff, "effort --run {c} --pair " + pair),
             ):
-                miss = [r for r in ckpts if r["run_id"] not in have]
+                miss = [
+                    r for r in ckpts
+                    if r["run_id"] not in have
+                    # step-0 weights ARE the baseline: diverging them is a no-op
+                    and not (kind == "divergence" and step(r) == 0)
+                ]
                 if not miss:
                     print(f"  {kind:<12} {len(have)}/{len(ckpts)} checkpoints")
                     continue
-                msteps = ", ".join(str(r["provenance"]["train_step_measured"]) for r in miss)
+                msteps = ", ".join(str(step(r)) for r in miss)
                 print(f"  {kind:<12} {len(have)}/{len(ckpts)} checkpoints  missing: step {msteps}")
                 c = f"{name}/{miss[0].get('label') or miss[0]['run_id']}"
                 b = f"{name}/{base.get('label') or base['run_id']}" if base else "BASE"
@@ -1087,7 +1101,7 @@ def main(argv: list[str] | None = None) -> int:
             for e in pair.excluded:
                 print(f"  excluded {e['row_id']}: {e['reason']}")
             if not args.gate:
-                print(f"\ninspect: http://127.0.0.1:8484/#/compare?a={pair.run_a}&b={pair.run_b}")
+                print(f"\ninspect: flipbook serve  ->  #/compare?a={pair.run_a}&b={pair.run_b}")
         if args.gate:
             ok, reasons = gate(pair, args.max_regression, args.max_new_truncation_rate)
             for r in reasons:

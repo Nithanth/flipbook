@@ -26,7 +26,9 @@ log = logging.getLogger(__name__)
 
 
 class RegressionEvaluator(SamplingClientEvaluator):
-    """Drops into ``infrequent_evaluator_builders``"""
+    """Drops into a cookbook config's ``evaluator_builders`` (or
+    ``infrequent_evaluator_builders`` - it counts its own calls, so either
+    cadence works)."""
     def __init__(
         self,
         *,

@@ -1,4 +1,4 @@
-from flipbook.cli import _report
+from flipbook.cli import _report, main
 from flipbook.store import Store
 
 
@@ -90,3 +90,63 @@ def test_report_skips_runs_still_sampling(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "step 10" not in out
     assert "step 5" in out
+
+
+def _status_study(store):
+    # baseline + step0 (the base weights again) + step5, nothing scored yet
+    store.put_run({"run_id": "b", "study": "s", "manifest_hash": "mh",
+                   "label": "baseline", "k": 1})
+    store.put_run({"run_id": "c0", "study": "s", "manifest_hash": "mh",
+                   "label": "step0", "train_step": 0, "k": 1,
+                   "provenance": {"train_step_measured": 0}})
+    store.put_run({"run_id": "c5", "study": "s", "manifest_hash": "mh",
+                   "label": "step5", "train_step": 5, "k": 1,
+                   "provenance": {"train_step_measured": 5}})
+
+
+def test_status_effort_hint_uses_canonical_pair(tmp_path, capsys):
+    store = Store(tmp_path)
+    _status_study(store)
+    main(["status", "--store", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "--pair 0.2,0.9" in out
+    assert "LOW,HIGH" not in out
+
+
+def test_status_step0_is_not_missing_divergence(tmp_path, capsys):
+    # step-0 weights ARE the baseline, so divergence has nothing to score
+    store = Store(tmp_path)
+    _status_study(store)
+    main(["status", "--store", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "--ckpt s/step5" in out
+    assert "--ckpt s/step0" not in out
+
+
+def test_status_counts_train_step_and_step0_measured(tmp_path, capsys):
+    # step0 carries only the in-loop measured step; step5 only the
+    # ref-resolved train_step - both count as checkpoints
+    store = Store(tmp_path)
+    store.put_run({"run_id": "b", "study": "s", "manifest_hash": "mh",
+                   "label": "baseline", "k": 1})
+    store.put_run({"run_id": "c0", "study": "s", "manifest_hash": "mh",
+                   "label": "step0", "k": 1,
+                   "provenance": {"train_step_measured": 0}})
+    store.put_run({"run_id": "c5", "study": "s", "manifest_hash": "mh",
+                   "label": "step5", "train_step": 5, "k": 1})
+    main(["status", "--store", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "checkpoints  2 (steps 0..5)" in out
+    assert "missing: step 0, 5" in out  # effort gap lists both
+    assert "missing: step 5" in out    # divergence skips the step-0 weights
+
+
+def test_status_warns_on_duplicate_labels(tmp_path, capsys):
+    # two 'baseline' runs make the study/baseline ref ambiguous
+    store = Store(tmp_path)
+    _status_study(store)
+    store.put_run({"run_id": "b2", "study": "s", "manifest_hash": "mh",
+                   "label": "baseline", "k": 1})
+    main(["status", "--store", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "warning: duplicate label 'baseline' - use run_id refs" in out
