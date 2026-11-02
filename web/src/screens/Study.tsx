@@ -752,7 +752,7 @@ function MetricStrip({
 }) {
   const evalCards: [string, string, (r: StepRow) => number | undefined, (v: number) => string][] = [
     ["pass@k", "fraction of questions where at least one of the k samples was correct - the headroom above pass@1", (r) => r.passK, (v) => `${(v * 100).toFixed(1)}%`],
-    ["divergence (nats)", "How far the checkpoint's token probabilities moved from base on the baseline's own reasoning traces. ~0 = unchanged policy; very negative = the internals shifted hard - often before accuracy shows it.", (r) => r.div, (v) => v.toLocaleString("en-US", { maximumFractionDigits: 0 })],
+    ["divergence (nats)", "How far the checkpoint's token probabilities moved from base on the baseline's own reasoning traces. Positive = the checkpoint assigns the baseline's traces higher probability than the baseline did (sharpened onto its own distribution); negative = it moved away from them. ~0 = unchanged policy; very negative = the internals shifted hard - often before accuracy shows it.", (r) => r.div, (v) => v.toLocaleString("en-US", { maximumFractionDigits: 0 })],
     ["mean gen tokens", "Average response length. A sudden drop or spike means the model changed how it answers (rambling into the cap, or collapsing to short format-locked answers).", (r) => r.genTok, (v) => v.toLocaleString("en-US", { maximumFractionDigits: 0 })],
     ["truncation", "Fraction of samples that hit the max-token cap before finishing. High truncation = the model rambles and never emits a final answer.", (r) => r.trunc, (v) => `${(v * 100).toFixed(0)}%`],
     ["effort gap (nats)", "Log-prob difference between effort=0.9 and effort=0.2 prompts on the same trace. Large = effort conditioning still modulates the model; ~0 = the dial is dead.", (r) => r.effortGap, (v) => v.toLocaleString("en-US", { maximumFractionDigits: 0 })],
@@ -1009,7 +1009,7 @@ function StepTable({ d, runs }: { d: Derived; runs: Run[] }) {
             <th><Tip text="Questions that changed correctness vs baseline. R = right→wrong regressions, G = wrong→right gains. Noise flips are roughly symmetric; one-directional flips signal a real shift.">flips</Tip></th>
             <th><Tip text="Fraction of samples truncated at the max-token cap.">trunc</Tip></th>
             <th><Tip text="Average response length in tokens.">gen tok</Tip></th>
-            <th><Tip text="Mean per-token log-prob shift of the checkpoint vs base, scored on the baseline's own traces. ~0 = unchanged; very negative = large internal shift.">div nats</Tip></th>
+            <th><Tip text="Mean per-token log-prob shift of the checkpoint vs base, scored on the baseline's own traces. Positive = the checkpoint assigns the baseline's traces higher probability than the baseline did (sharpened onto its own distribution); negative = it moved away from them.">div nats</Tip></th>
             <th><Tip text="Effort-conditioning gap in nats. Large = the effort dial still works; ~0 = conditioning collapsed.">effort gap</Tip></th>
             <th><Tip text="Estimated sampling cost of this eval point." right>cost</Tip></th>
           </tr>

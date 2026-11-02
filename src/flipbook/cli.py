@@ -341,6 +341,8 @@ def _report(store: Store, study: str) -> int:
     """'The read' as a terminal summary: the pass@1 arc, whether divergence
     moved first, response-length collapse, and total cost."""
     runs = [r for r in store.study_runs(study)]
+    # a run still sampling is not a point
+    runs = [r for r in runs if r.get("state") != "running"]
     if not runs:
         raise SystemExit(f"no runs in study {study!r} - studies: "
                          f"{sorted({r.get('study') for r in store.runs()})}")
@@ -451,7 +453,8 @@ def _report(store: Store, study: str) -> int:
     for r in (first_ck, last):
         s = store.samples(r["run_id"]).to_pylist()
         gen[r["run_id"]] = sum(x["gen_tokens"] for x in s) / len(s) if s else 0
-    if gen[first_ck["run_id"]] and gen[last["run_id"]] / gen[first_ck["run_id"]] < 0.4:
+    if (gen[first_ck["run_id"]] and gen[last["run_id"]]
+            and gen[last["run_id"]] / gen[first_ck["run_id"]] < 0.4):
         print(f"    responses shrank {gen[first_ck['run_id']]:.0f} -> {gen[last['run_id']]:.0f} tokens "
               f"({gen[first_ck['run_id']] / gen[last['run_id']]:.0f}x shorter) - it stopped reasoning, "
               "not just got answers wrong")
