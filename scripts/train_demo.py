@@ -238,7 +238,7 @@ def run_train(args) -> int:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser()
+    p = argparse.ArgumentParser(prog="flipbook train sft")
     sub = p.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("data")
     d.add_argument("--out", type=Path, default=None)

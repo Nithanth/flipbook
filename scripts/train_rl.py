@@ -289,7 +289,8 @@ def run_train(args) -> int:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p = argparse.ArgumentParser(prog="flipbook train rl",
+                                description=__doc__.splitlines()[0])
     p.add_argument("--env", choices=["arithmetic", "gsm8k", "math", "polaris", "deepmath"],
                    default="arithmetic", help="cookbook math env providing prompts + verifiable reward")
     p.add_argument("--log-dir", type=Path, default=None,
