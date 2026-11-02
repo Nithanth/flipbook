@@ -128,6 +128,15 @@ def _failure_kind(
     return "wrong_answer"
 
 
+def _sampling_client(sc, checkpoint_path: str | None, base_model: str):
+    # a checkpoint_path that isn't a tinker:// URI is the base model name
+    # itself (step-0 weights have no durable checkpoint), so it goes to
+    # base_model - model_path rejects plain model names
+    if checkpoint_path and checkpoint_path.startswith("tinker://"):
+        return sc.create_sampling_client(model_path=checkpoint_path)
+    return sc.create_sampling_client(base_model=checkpoint_path or base_model)
+
+
 def _train_step(checkpoint_path: str | None, label: str | None = None) -> int | None:
     # numeric checkpoint suffix wins; the "step<N>" label convention covers
     # non-numeric paths (e.g. sampler_weights/final). Exact match only - a
@@ -304,10 +313,8 @@ async def evaluate_async(
     store.put_run(record)
 
     # an injected client skips creating a new one, cfg.model still carries the path for identity and provenance
-    client = sampling_client or (
-        sc.create_sampling_client(model_path=resolved.checkpoint_path)
-        if resolved.checkpoint_path
-        else sc.create_sampling_client(base_model=resolved.base_model)
+    client = sampling_client or _sampling_client(
+        sc, resolved.checkpoint_path, resolved.base_model
     )
     sem = asyncio.Semaphore(concurrency)
 

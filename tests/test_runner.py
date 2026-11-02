@@ -108,3 +108,25 @@ def test_unresolvable_grader_aborts_before_sampling(tmp_path):
     with pytest.raises(LintFailed) as ei:
         evaluate(_cfg(m2.manifest_hash), store, forecast=True)
     assert "E_UNKNOWN_GRADER" in str(ei.value) and "bogus" in str(ei.value)
+
+
+def test_sampling_client_picks_kwarg_by_path_shape():
+    # canonical step-0 checkpoints store the base model name, not a tinker://
+    # path; model_path= on that name is the crash this guards
+    from flipbook.runner import _sampling_client
+
+    class SC:
+        def __init__(self):
+            self.kw = None
+
+        def create_sampling_client(self, **kw):
+            self.kw = kw
+            return kw
+
+    sc = SC()
+    _sampling_client(sc, "tinker://x/sampler_weights/000008", "unused")
+    assert sc.kw == {"model_path": "tinker://x/sampler_weights/000008"}
+    _sampling_client(sc, "thinkingmachines/Inkling-Small", "fallback")
+    assert sc.kw == {"base_model": "thinkingmachines/Inkling-Small"}
+    _sampling_client(sc, None, "fallback")
+    assert sc.kw == {"base_model": "fallback"}

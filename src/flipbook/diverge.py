@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from flipbook.pricing import PRICES, estimate_usd
-from flipbook.runner import _prompt_ints
+from flipbook.runner import _prompt_ints, _sampling_client
 from flipbook.stats import comparability, compare
 from flipbook.store import Store
 
@@ -137,11 +137,7 @@ async def diverge_async(
     sc = tinker.ServiceClient()
 
     def _client(rec: dict) -> Any:
-        return (
-            sc.create_sampling_client(model_path=rec["checkpoint_path"])
-            if rec["checkpoint_path"]
-            else sc.create_sampling_client(base_model=rec["model_id"])
-        )
+        return _sampling_client(sc, rec["checkpoint_path"], rec["model_id"])
 
     c_base, c_ckpt = _client(base), _client(ckpt)
     stops = list(renderer.get_stop_sequences())
@@ -263,11 +259,7 @@ async def branch(
     prompt = _prompt_ints(renderer, base["renderer"], mrow["messages"], base["effort"])
 
     sc = tinker.ServiceClient()
-    client = (
-        sc.create_sampling_client(model_path=ckpt["checkpoint_path"])
-        if ckpt["checkpoint_path"]
-        else sc.create_sampling_client(base_model=ckpt["model_id"])
-    )
+    client = _sampling_client(sc, ckpt["checkpoint_path"], ckpt["model_id"])
     resp = await client.sample_async(
         ModelInput.from_ints(prompt + ids[:pos]),
         num_samples=1,

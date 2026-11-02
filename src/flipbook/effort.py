@@ -15,7 +15,7 @@ from typing import Any
 
 from flipbook.diverge import _run_rec
 from flipbook.pricing import PRICES, estimate_usd
-from flipbook.runner import _prompt_ints
+from flipbook.runner import _prompt_ints, _sampling_client
 from flipbook.store import Store
 
 
@@ -86,11 +86,7 @@ async def effort_gap_async(
     # fully deduped runs skip sampling and summarize the stored rows below
     if todo:
         sc = tinker.ServiceClient()
-        client: Any = (
-            sc.create_sampling_client(model_path=rec["checkpoint_path"])
-            if rec["checkpoint_path"]
-            else sc.create_sampling_client(base_model=rec["model_id"])
-        )
+        client: Any = _sampling_client(sc, rec["checkpoint_path"], rec["model_id"])
         sem = asyncio.Semaphore(concurrency)
 
         async def _lp_sum(seq: list[int], plen: int) -> float:
