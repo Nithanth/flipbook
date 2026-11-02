@@ -63,22 +63,35 @@ flipbook eval --model thinkingmachines/Inkling-Small --manifest aime30 \
     --effort 0.9 --k 2 --study myrun --label baseline
 ```
 
-**3. Train with evals in the loop.** `flipbook train` runs an included recipe
-(SFT in `scripts/train_demo.py`, RL in `scripts/train_rl.py`) and evaluates
-every saved checkpoint into the same study. Both print a cost forecast and
-stop unless you pass `--yes`. For your own cookbook training loop, point
-`flipbook track <log dir>` at it afterward, or add `RegressionEvaluator` from
-`flipbook.evaluator` to your config's evaluator builders.
+**3. Train with evals in the loop.** `RegressionEvaluator` is a cookbook
+`SamplingClientEvaluator`: add it to any training config's `evaluator_builders`
+and every evaluated checkpoint lands in the study, compared against the
+baseline, with divergence scored on the baseline's traces.
 
-```bash
-flipbook train sft data                                    # writes data/gsm8k_sft.jsonl
-flipbook train sft train --study myrun --manifest aime30   # SFT; evals each checkpoint into the study
-flipbook train rl --env gsm8k --study myrl --manifest aime30   # RL with verifiable math reward
-flipbook eval myrun/final          # refs resolve checkpoint paths and inherit the study's settings
+```python
+from flipbook.evaluator import RegressionEvaluator
+from flipbook.store import Store
+
+evaluator = RegressionEvaluator(
+    manifest="aime30", baseline="myrun/baseline", store=Store("flipbook_store"),
+    study="myrun", eval_every=10, k=2,
+)
+config = Config(..., eval_every=10, save_every=10, evaluator_builders=[lambda: evaluator])
 ```
 
-`flipbook train sft train --help` and `flipbook train rl --help` list each
-recipe's knobs.
+Works in the SFT and RL loops alike; `eval_every` should divide `save_every`
+so evaluated weights are the saved ones. The RL loop saves its final
+checkpoint without evaluating it, so call `await evaluator(client, step=N)`
+on it afterward (the RL recipe shows how). For a run that already finished,
+`flipbook track <log dir>` evaluates its saved checkpoints after the fact.
+Two complete recipes ship as examples (`flipbook train sft`, `flipbook train
+rl`); both print a cost forecast and stop unless you pass `--yes`.
+
+```bash
+flipbook train sft train --study myrun --manifest aime30     # SFT; evals each checkpoint into the study
+flipbook train rl --env gsm8k --study myrl --manifest aime30 # RL with a verifiable reward
+flipbook eval myrun/final          # refs resolve checkpoint paths and inherit the study's settings
+```
 
 **4. Look at what changed.**
 
@@ -113,15 +126,24 @@ flipbook serve
 - Run identity is a hash of the full config. Re-running the same eval resumes from the samples already on disk, including after a killed process.
 - Nothing is specific to math. The manifest decides the task and the grader decides the score; `examples/language_tasks.jsonl` and `examples/language_graders.py` show a non-math setup.
 
-## An example of what it catches
+## What it catches
 
-Fine-tuning Inkling-Small on 1,024 GSM8K solutions (LoRA rank 32) dropped
-its pass@1 on AIME 2026 from 0.93 to 0.02 by step 24, while train loss fell
-steadily the whole way. The per-example evals showed why: the training targets
-contained no reasoning segment, and the model learned to stop producing one.
-At step 24, 42 of 60 responses were empty. The same recipe on the larger
-Inkling model did the same thing. `flipbook report` on either study tells
-that story from the stored samples.
+Two failure shapes show up often enough to name. In both, the training
+signal looks healthy throughout and the damage is only visible on a held-out
+eval, per example, before the aggregate score moves.
+
+- **A fine-tune that stops reasoning.** SFT targets with no reasoning segment
+  teach a thinking model to skip its own. Loss falls, held-out pass@1
+  collapses, and the first symptoms are empty responses, a rising `p_skip`,
+  and a large logprob divergence on the baseline's own traces.
+- **A reward the policy can satisfy cheaply.** RL with a reward that pays for
+  short or well-formed outputs saturates fast and keeps in-distribution
+  accuracy intact, while the model reasons less on problems it never trained
+  on. Held-out response length and divergence move first; accuracy follows
+  some steps later.
+
+`flipbook report <study>` narrates either from the stored samples, with each
+claim linked to the compare view that supports it.
 
 ## Development
 

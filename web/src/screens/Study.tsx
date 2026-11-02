@@ -703,6 +703,16 @@ function Narrative({ d, runs }: { d: Derived; runs: Run[] }) {
         }`,
         href: cmp(gt[gt.length - 1].step),
       });
+    else if (b < a * 0.7) {
+      // a gradual thinning of the reasoning is a leading indicator too:
+      // name the step it crossed -20% and whether that preceded the cliff
+      const onset = gt.find((r) => r.genTok! < a * 0.8);
+      const lead = onset && cliff && onset.step < cliff.step ? `, ${cliff.step - onset.step} steps before the first significant pass@1 drop` : "";
+      bullets.push({
+        t: `held-out responses thinned ${a.toFixed(0)} -> ${b.toFixed(0)} tokens (${((1 - b / a) * 100).toFixed(0)}% shorter), first past -20% at step ${onset!.step}${lead} - the model reasons less on problems it never trained on`,
+        href: cmp(onset!.step),
+      });
+    }
   }
 
   const tr = evals.filter((r) => r.trunc != null).reduce((a, b) => (b.trunc! > (a?.trunc ?? -1) ? b : a), evals[0]);
@@ -716,7 +726,7 @@ function Narrative({ d, runs }: { d: Derived; runs: Run[] }) {
     <div className="card read">
       <div className="mini-label">the read</div>
       <p className="verdict">{verdict}</p>
-      {[...rlBullets, ...bullets].slice(0, 4).map((b) =>
+      {[...rlBullets, ...bullets].slice(0, 5).map((b) =>
         b.href ? (
           <p key={b.t}>
             <a href={b.href}>{b.t}</a>
