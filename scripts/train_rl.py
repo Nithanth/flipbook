@@ -14,7 +14,7 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from tinker_cookbook import cli_utils, model_info
+from tinker_cookbook import checkpoint_utils, cli_utils, model_info
 from tinker_cookbook.recipes.math_rl import arithmetic_env, math_env
 from tinker_cookbook.rl.train import Config
 from tinker_cookbook.rl.train import main as rl_main
@@ -47,10 +47,32 @@ def build_dataset(args, renderer_name: str):
     )
 
 
-def build_config(args) -> Config:
+def build_config(args) -> tuple[Config, RegressionEvaluator]:
     renderer_name = model_info.get_recommended_renderer_name(args.model)
     store = Store(args.store)
     study = args.study or args.log_dir.name
+    # held by name: the RL loop stops after saving `final` without evaluating
+    # it, so the recipe calls this instance once more after rl_main returns
+    evaluator = RegressionEvaluator(
+        manifest=args.manifest,
+        baseline=args.baseline or args.model,
+        store=store,
+        log_dir=args.log_dir,
+        eval_every=args.eval_every,
+        efforts=(0.9,),
+        k=args.k,
+        temperature=0.6,
+        max_tokens=32768,
+        diverge=args.diverge,
+        train_config={
+            "recipe": "rl", "env": args.env, "lr": args.lr,
+            "group_size": args.group_size, "groups_per_batch": args.groups_per_batch,
+            "rollout_max_tokens": args.max_tokens, "kl_coef": args.kl_coef,
+            "lora_rank": args.lora_rank, "steps": args.steps,
+        },
+        effort_pair=(0.2, 0.9) if args.effort_pair else None,
+        study=study,
+    )
     return Config(
         learning_rate=args.lr,
         dataset_builder=build_dataset(args, renderer_name),
@@ -68,29 +90,8 @@ def build_config(args) -> Config:
         eval_every=args.eval_every,
         save_every=args.save_every,
         max_steps=args.steps,
-        evaluator_builders=[
-            lambda: RegressionEvaluator(
-                manifest=args.manifest,
-                baseline=args.baseline or args.model,
-                store=store,
-                log_dir=args.log_dir,
-                eval_every=args.eval_every,
-                efforts=(0.9,),
-                k=args.k,
-                temperature=0.6,
-                max_tokens=32768,
-                diverge=args.diverge,
-                train_config={
-                    "recipe": "rl", "env": args.env, "lr": args.lr,
-                    "group_size": args.group_size, "groups_per_batch": args.groups_per_batch,
-                    "rollout_max_tokens": args.max_tokens, "kl_coef": args.kl_coef,
-                    "lora_rank": args.lora_rank, "steps": args.steps,
-                },
-                effort_pair=(0.2, 0.9) if args.effort_pair else None,
-                study=study,
-            )
-        ],
-    )
+        evaluator_builders=[lambda: evaluator],
+    ), evaluator
 
 
 def forecast(args) -> tuple[int, float]:
@@ -112,9 +113,21 @@ def run_train(args) -> int:
     if not args.yes:
         print("dry run: pass --yes to train")
         return 3  # distinct from success so the CLI wrapper skips the "inspect" hint
-    config = build_config(args)
+    config, evaluator = build_config(args)
     cli_utils.check_log_dir(config.log_path, behavior_if_exists="raise")
     asyncio.run(rl_main(config))
+    # the RL loop saves sampler_weights/final and never evals it (unlike the
+    # SFT loop): score it here so the study arc includes the last checkpoint
+    last = checkpoint_utils.get_last_checkpoint(
+        str(args.log_dir), required_key="sampler_path"
+    )
+    if last is not None:
+        import tinker
+
+        client = tinker.ServiceClient().create_sampling_client(
+            model_path=last.sampler_path
+        )
+        asyncio.run(evaluator(client, step=args.steps))
     # reward/kl/episode-length land next to pass@1 on the study page
     n = import_metrics(Store(args.store), args.log_dir, args.study or args.log_dir.name)
     print(f"imported {n} training metrics into study {args.study or args.log_dir.name!r}")
@@ -125,7 +138,8 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--env", choices=["arithmetic", "gsm8k", "math", "polaris", "deepmath"],
                    default="arithmetic", help="cookbook math env providing prompts + verifiable reward")
-    p.add_argument("--log-dir", type=Path, default=Path("runs_rl/demo_eval"))
+    p.add_argument("--log-dir", type=Path, default=None,
+                   help="defaults to runs_rl/<study>")
     p.add_argument("--model", default=MODEL)
     p.add_argument("--manifest", required=True, help="held-out eval set the evaluator scores")
     p.add_argument("--baseline", default=None,
@@ -149,6 +163,8 @@ def main() -> int:
     p.add_argument("--effort-pair", action=argparse.BooleanOptionalAction, default=False)
     p.add_argument("--yes", action="store_true")
     args = p.parse_args()
+    if args.log_dir is None:
+        args.log_dir = Path("runs_rl") / (args.study or "demo_eval")
     if args.save_every % args.eval_every:
         raise SystemExit("--eval-every must divide --save-every (evals on unsaved steps "
                          "produce ephemeral weights that divergence cannot rescore)")
