@@ -71,7 +71,8 @@ def test_evaluator_writes_runs_and_metrics(tmp_path):
         efforts=(0.9,), k=2, temperature=0.0, max_tokens=256,
         diverge=False, effort_pair=None,
     )
-    metrics = asyncio.run(ev(fake))
+    # explicit step so the fake's base-model path isn't short-circuited as step 0
+    metrics = asyncio.run(ev(fake, step=8))
     assert metrics["flipbook/m/pass1"] == 1.0
     assert metrics["flipbook/m/delta_vs_base"] == 0.0
     assert "flipbook/m/delta_ci_lo" in metrics
@@ -81,7 +82,8 @@ def test_evaluator_writes_runs_and_metrics(tmp_path):
     # a ckpt run record exists, with the measured step patched in
     import json
     runs = [json.loads(f.read_text()) for f in (store.path / "runs").glob("*.json")]
-    assert any(r["provenance"].get("train_step_measured") == 0 for r in runs)
+    ckpt = next(r for r in runs if r["provenance"].get("train_step_measured") == 8)
+    assert ckpt["provenance"]["baseline_run_id"] == base_rid
     # error path: missing manifest -> error metric, no raise
     ev2 = RegressionEvaluator(manifest="nope", baseline=base_rid, store=store,
                               diverge=False, effort_pair=None)
@@ -146,3 +148,62 @@ def test_step0_eval_is_the_baseline(tmp_path, monkeypatch):
     assert runs[0].get("train_step") is None  # API/GUI identify baseline this way
     assert metrics["flipbook/m/pass1"] == 1.0
     assert metrics["flipbook/m/delta_vs_base"] == 0.0
+
+
+def test_step0_reuses_a_run_ref_baseline(tmp_path, monkeypatch):
+    # baseline given as a run ref of the same base model: step 0 samples
+    # nothing and charts the baseline's own numbers
+    store, m = _store_with_manifest(tmp_path)
+    fake = FakeSampler(_cont_tokens())
+    base_cfg = _cfg(m.manifest_hash)
+    asyncio.run(evaluate_async(base_cfg, store, sampling_client=fake))
+    import flipbook.evaluator as evmod
+    seen = []
+
+    async def spy(cfg, store, **kw):
+        seen.append(cfg.label)
+        raise AssertionError("step 0 must not sample")
+
+    monkeypatch.setattr(evmod, "evaluate_async", spy)
+    ev = RegressionEvaluator(
+        manifest="m", baseline=run_id(base_cfg), store=store, eval_every=8,
+        k=2, temperature=0.0, max_tokens=256, diverge=True, effort_pair=None, study="s",
+    )
+    metrics = asyncio.run(ev(fake))
+    assert seen == []
+    assert metrics["flipbook/m/pass1"] == 1.0
+    assert "flipbook/m/divergence_mean_nats" not in metrics
+    assert store.training_metrics("s").num_rows > 0
+
+
+
+def test_already_evaluated_step_is_reused(tmp_path, monkeypatch):
+    # a resumed run asks for a step the store already has: recompute metrics
+    # from the stored run, never sample it again
+    store, m = _store_with_manifest(tmp_path)
+    fake = FakeSampler(_cont_tokens())
+    base_cfg = _cfg(m.manifest_hash)
+    asyncio.run(evaluate_async(base_cfg, store, sampling_client=fake))
+    base_rid = run_id(base_cfg)
+    kw = {"manifest": "m", "baseline": base_rid, "store": store, "eval_every": 8,
+          "efforts": (0.9,), "k": 2, "temperature": 0.0, "max_tokens": 256,
+          "diverge": False, "effort_pair": None, "study": "s"}
+    asyncio.run(RegressionEvaluator(**kw)(fake, step=8))
+    import flipbook.evaluator as evmod
+
+    async def spy(cfg, store, **kw):
+        raise AssertionError("already-evaluated step must not sample")
+
+    monkeypatch.setattr(evmod, "evaluate_async", spy)
+    metrics = asyncio.run(RegressionEvaluator(**kw)(fake, step=8))
+    assert metrics["flipbook/m/pass1"] == 1.0
+
+
+def test_start_step_offsets_calls(tmp_path):
+    store, _m = _store_with_manifest(tmp_path)
+    ev = RegressionEvaluator(manifest="m", baseline="x", store=store,
+                             eval_every=8, start_step=16)
+    assert ev.calls == 2
+    with pytest.raises(ValueError):
+        RegressionEvaluator(manifest="m", baseline="x", store=store,
+                            eval_every=8, start_step=5)

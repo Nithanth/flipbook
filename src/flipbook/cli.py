@@ -340,7 +340,7 @@ def _run_cost(store: Store, r: dict) -> float:
 def _report(store: Store, study: str) -> int:
     """'The read' as a terminal summary: the pass@1 arc, whether divergence
     moved first, response-length collapse, and total cost."""
-    runs = [r for r in store.runs(study)]
+    runs = [r for r in store.study_runs(study)]
     if not runs:
         raise SystemExit(f"no runs in study {study!r} - studies: "
                          f"{sorted({r.get('study') for r in store.runs()})}")
@@ -885,6 +885,8 @@ def main(argv: list[str] | None = None) -> int:
         for r in runs:
             studies.setdefault(r.get("study") or "-", []).append(r)
         for name, rs in sorted(studies.items()):
+            if name != "-":
+                rs = store.study_runs(name)
             ckpts = sorted(
                 (
                     r

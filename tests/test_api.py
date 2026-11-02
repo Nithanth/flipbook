@@ -286,3 +286,23 @@ def test_thinking_without_tokenizer():
     from flipbook.decode import thinking
 
     assert thinking("synthetic/Nope", [1, 2, 3], "x") is None
+
+
+
+def test_study_charts_shared_baseline(tmp_path):
+    # the baseline run belongs to another study; checkpoints reference it via
+    # provenance.baseline_run_id and the study page still gets its step-0 arc
+    from flipbook.synthetic import seed_synthetic
+
+    store = Store(tmp_path)
+    seed_synthetic(store)
+    base = next(r for r in store.runs() if r.get("train_step") is None)
+    base["study"] = "other"
+    store.put_run(base)
+    for r in store.runs("synthetic"):
+        r.setdefault("provenance", {})["baseline_run_id"] = base["run_id"]
+        store.put_run(r)
+    c = _client(tmp_path)
+    d = c.get("/api/studies/synthetic").json()
+    assert base["run_id"] in {r["run_id"] for r in d["runs"]}
+    assert {p["step"] for p in d["metrics"]["eval/pass1"]} == {0, 24, 48, 64}

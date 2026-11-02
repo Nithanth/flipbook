@@ -165,6 +165,20 @@ class Store:
         ]
         return [r for r in runs if study is None or r.get("study") == study]
 
+    def study_runs(self, study: str) -> list[dict]:
+        """In-study runs plus their referenced baselines: a baseline eval is
+        a fact about model+manifest, so several studies may share one."""
+        runs = self.runs(study)
+        have = {r["run_id"] for r in runs}
+        for r in runs:
+            rid = (r.get("provenance") or {}).get("baseline_run_id")
+            if rid and rid not in have:
+                f = self.path / "runs" / f"{rid}.json"
+                if f.exists():
+                    runs.append(json.loads(f.read_text()))
+                    have.add(rid)
+        return runs
+
     def resolve_run(self, ref: str) -> dict:
         """Address a run by id, unique id prefix, 'study/label', or unique label.
 
