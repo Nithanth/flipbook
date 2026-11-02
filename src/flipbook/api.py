@@ -345,10 +345,17 @@ def create_app(store_path: str | Path) -> FastAPI:
         # synthesize the per-step series when training_metrics hasn't landed
         # (cookbook flushes metrics.jsonl late, or never for bare evals)
         base = next((r for r in sruns if r.get("train_step") is None), None)
-        charted = {p["step"] for k, v in metrics.items() if k.endswith("/pass1") for p in v}
+        pass1_keys = [k for k in metrics if k.endswith("/pass1")]
+        charted = {p["step"] for k in pass1_keys for p in metrics[k]}
+        # WHY: the in-loop evaluator namespaces by manifest; synthesized points
+        # must join that series, not start a parallel "eval/" one the chart
+        # would pick between at random
+        prefix = pass1_keys[0].rsplit("/", 1)[0] if pass1_keys else "eval"
         if base:
             # the baseline itself has no train_step, so nothing above charts it:
             # borrow its side of the first live pair as the step-0 point
+            # a run trained for 0 steps is the base model already; don't chart it twice
+            has_step0 = 0 in charted or any(r.get("train_step") == 0 for r in sruns)
             base_pair = None
             for r in sruns:
                 st = r.get("train_step")
@@ -358,7 +365,7 @@ def create_app(store_path: str | Path) -> FastAPI:
                 pair = _compare_live(base["run_id"], r["run_id"])
                 if not pair["n_pairs"]:
                     continue
-                if base_pair is None and 0 not in charted:
+                if base_pair is None and not has_step0:
                     base_pair = pair
                 stats = {
                     "pass1": pair["acc_b"], "delta_vs_base": pair["delta"],
@@ -370,11 +377,11 @@ def create_app(store_path: str | Path) -> FastAPI:
                     "cost_usd": pair["cost_b"],
                 }
                 for k, v in stats.items():
-                    metrics.setdefault(f"eval/{k}", []).append({"step": st, "value": v})
+                    metrics.setdefault(f"{prefix}/{k}", []).append({"step": st, "value": v})
                 for n, pv in (pair.get("passn") or {}).items():
-                    metrics.setdefault(f"eval/pass{n}", []).append({"step": st, "value": pv["b"]})
+                    metrics.setdefault(f"{prefix}/pass{n}", []).append({"step": st, "value": pv["b"]})
                 for n, pv in (pair.get("scoren") or {}).items():
-                    metrics.setdefault(f"eval/score{n}", []).append({"step": st, "value": pv["b"]})
+                    metrics.setdefault(f"{prefix}/score{n}", []).append({"step": st, "value": pv["b"]})
             if base_pair is not None:
                 stats = {
                     "pass1": base_pair["acc_a"],
@@ -383,11 +390,11 @@ def create_app(store_path: str | Path) -> FastAPI:
                     "cost_usd": base_pair["cost_a"],
                 }
                 for k, v in stats.items():
-                    metrics.setdefault(f"eval/{k}", []).append({"step": 0, "value": v})
+                    metrics.setdefault(f"{prefix}/{k}", []).append({"step": 0, "value": v})
                 for n, pv in (base_pair.get("passn") or {}).items():
-                    metrics.setdefault(f"eval/pass{n}", []).append({"step": 0, "value": pv["a"]})
+                    metrics.setdefault(f"{prefix}/pass{n}", []).append({"step": 0, "value": pv["a"]})
                 for n, pv in (base_pair.get("scoren") or {}).items():
-                    metrics.setdefault(f"eval/score{n}", []).append({"step": 0, "value": pv["a"]})
+                    metrics.setdefault(f"{prefix}/score{n}", []).append({"step": 0, "value": pv["a"]})
         # divergence backfills live in their own files, not training_metrics
         divd = store.path / "divergence"
         if divd.exists():

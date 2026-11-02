@@ -253,6 +253,35 @@ def test_study_charts_baseline_step(tmp_path):
     assert abs(step0["value"] - 0.95) < 0.01
 
 
+def test_study_synthesizes_into_the_evaluator_namespace(tmp_path):
+    # an in-loop evaluator already wrote step 24 under its own prefix; the
+    # synthesized points for the other checkpoints must join that series
+    from flipbook.synthetic import seed_synthetic
+
+    store = Store(tmp_path)
+    seed_synthetic(store)
+    store.put_training_metrics("synthetic", [
+        {"study": "synthetic", "step": 24, "key": "flipbook/m/pass1", "value": 0.0}])
+    d = _client(tmp_path).get("/api/studies/synthetic").json()
+    assert "eval/pass1" not in d["metrics"]
+    assert {p["step"] for p in d["metrics"]["flipbook/m/pass1"]} == {0, 24, 48, 64}
+
+
+def test_study_does_not_chart_step0_twice(tmp_path):
+    # a checkpoint trained for zero steps is the base model; the baseline
+    # run must not be added as a second step-0 point on top of it
+    from flipbook.synthetic import seed_synthetic
+
+    store = Store(tmp_path)
+    seed_synthetic(store)
+    runs = store.runs()
+    step24 = next(r for r in runs if r.get("train_step") == 24)
+    store.put_run({**step24, "train_step": 0})
+    d = _client(tmp_path).get("/api/studies/synthetic").json()
+    steps = [p["step"] for p in d["metrics"]["eval/pass1"]]
+    assert steps.count(0) == 1
+
+
 def test_thinking_without_tokenizer():
     from flipbook.decode import thinking
 
