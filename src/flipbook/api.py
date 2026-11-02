@@ -78,7 +78,14 @@ def create_app(store_path: str | Path) -> FastAPI:
 
     def _run_list(study: str | None = None):
         all_runs = _cached("runs", store.runs)
-        return [r for r in all_runs if not study or r.get("study") == study]
+        if study is None:
+            return all_runs
+        own = [r for r in all_runs if r.get("study") == study]
+        have = {r["run_id"] for r in own}
+        refs = {
+            (r.get("provenance") or {}).get("baseline_run_id") for r in own
+        } - {None} - have
+        return own + [r for r in all_runs if r["run_id"] in refs]
 
     def _divergence(a: str, b: str):
         return _cached(f"div:{a}__{b}", lambda: store.divergence(a, b))

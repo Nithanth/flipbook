@@ -188,3 +188,18 @@ def test_status_marks_running_runs(tmp_path, capsys):
     store.put_run({"run_id": "b" * 12, "study": "s", "label": "step8", "state": "running"})
     assert main(["status", "--store", str(tmp_path)]) == 0
     assert "1 still sampling" in capsys.readouterr().out
+
+
+
+def test_study_runs_includes_referenced_baseline(tmp_path):
+    store = Store(tmp_path)
+    store.put_run({"run_id": "base1", "study": "a", "label": "baseline"})
+    store.put_run({"run_id": "ck1", "study": "b", "label": "step8",
+                   "provenance": {"train_step_measured": 8,
+                                  "baseline_run_id": "base1"}})
+    assert {r["run_id"] for r in store.runs("b")} == {"ck1"}
+    assert {r["run_id"] for r in store.study_runs("b")} == {"ck1", "base1"}
+    # a missing reference is skipped, not an error
+    store.put_run({"run_id": "ck2", "study": "b",
+                   "provenance": {"baseline_run_id": "gone"}})
+    assert len(store.study_runs("b")) == 3

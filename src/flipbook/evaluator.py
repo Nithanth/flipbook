@@ -45,12 +45,17 @@ class RegressionEvaluator(SamplingClientEvaluator):
         seed: int = 0,
         concurrency: int = 8,
         train_config: dict | None = None,
+        start_step: int = 0,
     ):
         self.manifest_name = manifest
         self.baseline = baseline
         self.store = store
         self.log_dir = Path(log_dir) if log_dir else None
         self.eval_every = eval_every
+        if start_step % eval_every:
+            raise ValueError(
+                f"start_step {start_step} is not a multiple of eval_every {eval_every}")
+        self.calls = start_step // eval_every
         self.efforts = efforts
         self.k = k
         self.temperature = temperature
@@ -61,7 +66,6 @@ class RegressionEvaluator(SamplingClientEvaluator):
         self.seed = seed
         self.concurrency = concurrency
         self.train_config = train_config
-        self.calls = 0
         self._baseline_rid: str | None = None
         self._resolved = None  # Resolved(base_model, renderer) — once per lifetime
     async def __call__(
@@ -94,16 +98,35 @@ class RegressionEvaluator(SamplingClientEvaluator):
             step = self.calls * self.eval_every
         self.calls += 1
         self._check_step_alignment(step, model_path)
+        # a resumed run may ask for a step we already billed: recompute the
+        # metrics from the stored run instead of re-sampling it
+        done = self.study and next(
+            (r for r in self.store.runs(self.study)
+             if r.get("train_step") == step
+             and r.get("manifest_hash") == manifest.manifest_hash
+             and r.get("effort") == self.efforts[0]),
+            None,
+        )
+        if done:
+            log.info("step %d already evaluated as %s; reusing",
+                     step, done["run_id"])
+            baseline_rid = await self._ensure_baseline(manifest)
+            return self._store_metrics(step, self._metrics_for(name, baseline_rid, done["run_id"]))
         # step-0 weights ARE the base model: billing this eval as the baseline
         # (same config a `flipbook eval --model <base> --label baseline` run
         # produces) stops _ensure_baseline from sampling it a second time.
         # The run keeps train_step None so the API/GUI read it as baseline.
-        as_baseline = (
-            step == 0
-            and self._canonical_path(model_path, step) == self._resolved.base_model
-            and not self._baseline_rid
-            and self._baseline_is_model_name()
-        )
+        at_base = step == 0 and self._canonical_path(model_path, step) == self._resolved.base_model
+        as_baseline = at_base and not self._baseline_rid and self._baseline_is_model_name()
+        if at_base and not as_baseline:
+            # a run-ref baseline of these same weights on this manifest: nothing
+            # to sample, chart its own numbers as the step-0 point
+            base_run = self.store.resolve_run(self.baseline)
+            if (base_run.get("model_id") == self._resolved.base_model
+                    and base_run.get("manifest_hash") == manifest.manifest_hash):
+                self._baseline_rid = base_run["run_id"]
+                log.info("step 0 is the base model; reusing baseline run %s", self._baseline_rid)
+                return self._store_metrics(step, self._metrics_for(name, self._baseline_rid, self._baseline_rid))
         run_ids = {}
         for eff in self.efforts:
             cfg = RunConfig(
@@ -120,30 +143,16 @@ class RegressionEvaluator(SamplingClientEvaluator):
             )
             rid = run_id(cfg)
             run_ids[eff] = rid
-            if as_baseline:
-                if eff == self.efforts[0]:
-                    self._baseline_rid = rid
-            else:
-                self._patch_provenance(rid, step, model_path)
+            if as_baseline and eff == self.efforts[0]:
+                self._baseline_rid = rid
         rid = run_ids[self.efforts[0]]
         baseline_rid = await self._ensure_baseline(manifest)
-        pair = compare(self.store, baseline_rid, rid)
-        metrics = {
-            f"{name}/pass1": pair.acc_b,
-            f"{name}/delta_vs_base": pair.delta,
-            f"{name}/delta_ci_lo": pair.delta_ci[0],
-            f"{name}/delta_ci_hi": pair.delta_ci[1],
-            f"{name}/regressions": float(sum(f["kind"] == "regression" for f in pair.flips)),
-            f"{name}/gains": float(sum(f["kind"] == "gain" for f in pair.flips)),
-            f"{name}/truncation_rate": pair.truncation_rate_b,
-            f"{name}/mean_gen_tokens": pair.tokens["b"]["mean"],
-            f"{name}/cost_usd": pair.cost_b,
-        }
-        for n in range(2, self.k + 1):
-            if str(n) in pair.passn:
-                metrics[f"{name}/pass{n}"] = pair.passn[str(n)]["b"]
-        if self.diverge and pair.n_pairs:
-            flips = [f["row_id"] for f in pair.flips]
+        if not as_baseline:
+            for erid in run_ids.values():
+                self._patch_provenance(erid, step, model_path, baseline_rid)
+        metrics = self._metrics_for(name, baseline_rid, rid)
+        if self.diverge and rid != baseline_rid:
+            flips = [f["row_id"] for f in compare(self.store, baseline_rid, rid).flips]
             ds = await diverge_async(
                 self.store, baseline_rid, rid, flips or None,
                 concurrency=self.concurrency, log=lambda m: log.info(m),
@@ -169,7 +178,28 @@ class RegressionEvaluator(SamplingClientEvaluator):
             if e_lo in run_ids:
                 tok_lo = compare(self.store, baseline_rid, run_ids[e_lo]).tokens["b"]["mean"]
                 if tok_lo:
-                    metrics[f"{name}/effort_len_ratio"] = pair.tokens["b"]["mean"] / tok_lo
+                    metrics[f"{name}/effort_len_ratio"] = metrics[f"{name}/mean_gen_tokens"] / tok_lo
+        return self._store_metrics(step, metrics)
+
+    def _metrics_for(self, name: str, baseline_rid: str, rid: str) -> dict[str, float]:
+        pair = compare(self.store, baseline_rid, rid)
+        metrics = {
+            f"{name}/pass1": pair.acc_b,
+            f"{name}/delta_vs_base": pair.delta,
+            f"{name}/delta_ci_lo": pair.delta_ci[0],
+            f"{name}/delta_ci_hi": pair.delta_ci[1],
+            f"{name}/regressions": float(sum(f["kind"] == "regression" for f in pair.flips)),
+            f"{name}/gains": float(sum(f["kind"] == "gain" for f in pair.flips)),
+            f"{name}/truncation_rate": pair.truncation_rate_b,
+            f"{name}/mean_gen_tokens": pair.tokens["b"]["mean"],
+            f"{name}/cost_usd": pair.cost_b,
+        }
+        for n in range(2, self.k + 1):
+            if str(n) in pair.passn:
+                metrics[f"{name}/pass{n}"] = pair.passn[str(n)]["b"]
+        return metrics
+
+    def _store_metrics(self, step: int, metrics: dict[str, float]) -> dict[str, float]:
         # eval metrics belong in the store the moment they exist - the study
         # page charts these live; cookbook-side loss/epoch still arrive via
         # import-metrics
@@ -229,11 +259,15 @@ class RegressionEvaluator(SamplingClientEvaluator):
             return self._resolved.base_model
         return re.sub(r"/sampler_weights/[^/]+$", f"/sampler_weights/{step:06d}", model_path)
 
-    def _patch_provenance(self, rid: str, step: int, model_path: str) -> None:
-        """The run record knows its weights path; add the measured train step."""
+    def _patch_provenance(self, rid: str, step: int, model_path: str,
+                          baseline_rid: str | None = None) -> None:
+        """The run record knows its weights path; add the measured train step
+        and which baseline its deltas were computed against."""
         f = self.store.path / "runs" / f"{rid}.json"
         rec = json.loads(f.read_text())
         canon = self._canonical_path(model_path, step)
+        if baseline_rid:
+            rec["provenance"]["baseline_run_id"] = baseline_rid
         rec["provenance"]["train_step_measured"] = step
         rec["provenance"]["model_path"] = canon
         rec["checkpoint_path"] = canon
