@@ -197,7 +197,7 @@ function derive(detail: StudyDetail): Derived {
   const rlSeries = (
     [
       ["env/all/reward/total", "reward", "mean verifiable reward per rollout batch - what the optimizer is actually maximizing", (v: number) => v.toFixed(2)],
-      ["env/all/by_group/frac_mixed", "mixed groups", "fraction of rollout groups with both correct and incorrect samples. Group-centred advantages are zero on all-good or all-bad groups, so this is the share of the batch that carried any gradient signal", (v: number) => `${(v * 100).toFixed(0)}%`],
+      ["env/all/by_group/frac_mixed", "mixed groups", "fraction of rollout groups whose rewards differed within the group - the share carrying any gradient signal. Only meaningful for binary rewards; a shaped reward makes nearly every group 'mixed'", (v: number) => `${(v * 100).toFixed(0)}%`],
       ["env/all/ac_tokens_per_turn", "rollout tokens", "action tokens generated per turn during rollouts - drift means the policy changed how much it says on the training distribution", (v: number) => v.toFixed(0)],
       ["optim/entropy", "entropy", "policy entropy over sampled actions - collapse means the policy sharpens onto fewer tokens", (v: number) => v.toFixed(3)],
       ["kl_pre_post_v1", "kl pre/post", "KL of the policy before vs after each optim step - the step size the optimizer actually took", (v: number) => (Math.abs(v) < 1e-3 ? v.toExponential(1) : v.toFixed(4))],

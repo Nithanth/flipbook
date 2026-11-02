@@ -25,6 +25,20 @@ export default function Divergence() {
   }, []);
 
   const label = (id: string) => runLabel(runs.find((x) => x.run_id === id), id);
+  // group pairs by study like compare's RunPicker; a pair belongs to its
+  // checkpoint's study (the same base may back several studies)
+  const studyOf = (id: string) => runs.find((x) => x.run_id === id)?.study;
+  const pairStudy = (p: Pair) => studyOf(p.ckpt) ?? studyOf(p.base) ?? "unlabeled";
+  const pairText = (p: Pair) =>
+    `${label(p.base)} → ${label(p.ckpt)}${p.self ? " (noise floor)" : ""}`;
+  const studies = [...new Set(pairs.map(pairStudy))].sort();
+  // the same "base → ckpt" text in two different studies needs a study/ prefix
+  const textStudies = new Map<string, Set<string>>();
+  for (const p of pairs) {
+    const t = pairText(p);
+    textStudies.set(t, (textStudies.get(t) ?? new Set()).add(pairStudy(p)));
+  }
+  const crossStudyDup = (t: string) => (textStudies.get(t)?.size ?? 0) > 1;
 
   useEffect(() => {
     if (!sel) return;
@@ -59,11 +73,20 @@ export default function Divergence() {
           <label>
             pair{" "}
             <select value={sel} onChange={(e) => setSel(e.target.value)}>
-              {pairs.map((p) => (
-                <option key={`${p.base}__${p.ckpt}`} value={`${p.base}__${p.ckpt}`}>
-                  {label(p.base)} → {label(p.ckpt)}
-                  {p.self ? " (noise floor)" : ""}
-                </option>
+              {studies.map((s) => (
+                <optgroup key={s} label={s}>
+                  {pairs
+                    .filter((p) => pairStudy(p) === s)
+                    .map((p) => {
+                      const t = pairText(p);
+                      return (
+                        <option key={`${p.base}__${p.ckpt}`} value={`${p.base}__${p.ckpt}`}>
+                          {crossStudyDup(t) ? `${s}/` : ""}
+                          {t}
+                        </option>
+                      );
+                    })}
+                </optgroup>
               ))}
             </select>
           </label>
@@ -96,7 +119,7 @@ export default function Divergence() {
           <thead>
             <tr>
               <th>row</th>
-              <th><Tip text="Total log-prob shift of the checkpoint vs base, summed over every token of the baseline's own trace. Negative = the checkpoint finds this trace less likely.">Σ nats</Tip></th>
+              <th><Tip text="Total log-prob shift of the checkpoint vs base, summed over every token of the baseline's own trace. Positive = the checkpoint assigns these traces higher probability than the baseline did (sharpened onto its own distribution); negative = it moved away from them.">Σ nats</Tip></th>
               {!collapseDiv && (
                 <th><Tip text="Token position where the two models' per-token log-probs first diverge materially - roughly where the checkpoint starts reasoning differently.">first div</Tip></th>
               )}
@@ -188,7 +211,9 @@ function PairRead({
         `median Σ ${medSum.toFixed(1)} nats across ${n} rows - ${
           Math.abs(medSum) < 5
             ? "the checkpoint still finds these baseline traces about as likely as base did"
-            : "the checkpoint assigns these baseline traces substantially different probability"
+            : medSum > 0
+              ? "the checkpoint assigns these traces higher probability than the baseline did (sharpened onto its own distribution)"
+              : "it moved away from them"
         }`,
       ];
   if (!self && floor != null && Math.abs(medSum) > floor * 3) {
