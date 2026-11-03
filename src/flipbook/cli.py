@@ -463,7 +463,10 @@ def _report(store: Store, study: str, as_json: bool = False) -> int:
         bullets.append(f"train/nll kept falling {nll[0]['value']:.2f} -> {nll[-1]['value']:.2f} "
               "while eval fell - the loss never saw it")
     spend = sum(_run_cost(store, r) for r in runs)
-    compare_ref = f"{study}/{base.get('label')} {study}/{last.get('label')}"
+    def _ref(r):
+        # shared baselines live under their own study, not this one
+        return f"{r['study']}/{r['label']}" if r.get("study") and r.get("label") else r["run_id"]
+    compare_ref = f"{_ref(base)} {_ref(last)}"
     if as_json:
         # the same read as a payload: verdict + evidence, for a notifier or a bot
         print(json.dumps({

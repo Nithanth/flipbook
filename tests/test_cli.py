@@ -1,3 +1,5 @@
+import json
+
 from flipbook.cli import _report, main
 from flipbook.store import Store
 
@@ -104,6 +106,22 @@ def test_report_json_is_the_same_read(tmp_path, capsys):
     assert all(b in text for b in d["bullets"])
     assert [p["step"] for p in d["pass1"]] == [0, 5]
     assert d["delta_ci"][1] < 0 and d["compare"].startswith("flipbook compare s/")
+
+
+def test_report_compare_ref_uses_the_baselines_own_study(tmp_path, capsys):
+    # shared baseline: rl_short's checkpoints point at rl_len/baseline, so the
+    # compare hint must print that study, not rl_short/baseline
+    store = Store(tmp_path)
+    _study(store, [1] * 20, [0] * 20)
+    store.put_run({"run_id": "other_base", "study": "other", "manifest_hash": "mh",
+                   "label": "baseline", "model_id": "m", "k": 1, "state": "done"})
+    r = json.loads((tmp_path / "runs" / "c.json").read_text())
+    r["study"] = "s2"
+    r.setdefault("provenance", {})["baseline_run_id"] = "other_base"
+    (tmp_path / "runs" / "c.json").write_text(json.dumps(r))
+    _report(store, "s2")
+    out = capsys.readouterr().out
+    assert "compare: flipbook compare other/baseline" in out
 
 
 def _status_study(store):
