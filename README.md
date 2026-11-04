@@ -24,7 +24,7 @@ Terminal equivalents of the GUI:
 
 ```bash
 uv run flipbook status                                      # what is in the store
-uv run flipbook report synthetic                            # one-paragraph summary of a study
+uv run flipbook report synthetic                            # pass@1 arc + CI-gated verdict
 uv run flipbook compare synthetic/baseline synthetic/step24 # paired stats and per-example flips
 uv run flipbook show synthetic/step24 synthetic-1           # one question, every sample
 ```
@@ -97,7 +97,7 @@ flipbook eval myrun/final          # refs resolve checkpoint paths and inherit t
 
 ```bash
 flipbook status                         # studies, cost, which steps still lack divergence or effort data
-flipbook report myrun                   # the summary
+flipbook report myrun                   # the arc and the verdict
 flipbook compare myrun/baseline myrun/final
 flipbook diverge --base myrun/baseline --ckpt myrun/final   # per-token logprob shift on the baseline's own traces
 flipbook effort --run myrun/final --pair 0.2,0.9            # does the effort setting still change the output
@@ -121,29 +121,33 @@ flipbook serve
 
 ## Design
 
-- The CLI is the only thing that spends money or writes to the store. The GUI is read-only.
-- The store is a directory of Parquet and JSON files (`./flipbook_store` by default, or `--store`, or `FLIPBOOK_STORE`). The server holds no state; copy the directory anywhere and serve it.
-- Run identity is a hash of the full config. Re-running the same eval resumes from the samples already on disk, including after a killed process.
-- Nothing is specific to math. The manifest decides the task and the grader decides the score; `examples/language_tasks.jsonl` and `examples/language_graders.py` show a non-math setup.
+- The GUI is read-only. The CLI owns all sampling and all writes.
+- The store is a directory of Parquet and JSON files (`./flipbook_store`,
+  or `--store`, or `FLIPBOOK_STORE`). Copy it anywhere and `serve` it; the
+  server keeps no state.
+- Run identity is a hash of the eval config, so re-running an eval resumes
+  from what's already on disk instead of paying twice.
+- No math assumptions: the manifest picks the task, the grader picks the
+  score. `examples/` has a non-math setup.
 
 ## What it catches
 
-Two failure shapes show up often enough to name. In both, the training
-signal looks healthy throughout and the damage is only visible on a held-out
-eval, per example, before the aggregate score moves.
+The two failure shapes it was built for share one property: the training
+metrics look healthy the whole time, and the only evidence is on the
+held-out eval.
 
-- **A fine-tune that stops reasoning.** SFT targets with no reasoning segment
-  teach a thinking model to skip its own. Loss falls, held-out pass@1
-  collapses, and the first symptoms are empty responses, a rising `p_skip`,
-  and a large logprob divergence on the baseline's own traces.
-- **A reward the policy can satisfy cheaply.** RL with a reward that pays for
-  short or well-formed outputs saturates fast and keeps in-distribution
-  accuracy intact, while the model reasons less on problems it never trained
-  on. Held-out response length and divergence move first; accuracy follows
-  some steps later.
+- **A fine-tune that stops reasoning.** Targets with no reasoning segment
+  teach a thinking model to skip it. Loss falls while pass@1 collapses;
+  the first symptoms are empty responses, rising `p_skip`, and divergence
+  on the baseline's own traces.
+- **A reward the policy can satisfy cheaply.** Pay for short or well-formed
+  outputs and the reward saturates while held-out responses thin out.
+  Length and divergence move before held-out accuracy does.
 
-`flipbook report <study>` narrates either from the stored samples, with each
-claim linked to the compare view that supports it.
+`flipbook report <study>` prints the pass@1 arc across a study's
+checkpoints, then a verdict - regressed, improved, or within noise -
+chosen by whether the paired 95% CI excludes zero, with the metrics that
+moved first listed under it.
 
 ## Development
 
