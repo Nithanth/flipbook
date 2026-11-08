@@ -1,11 +1,8 @@
 # flipbook
 
 Regression analysis for [Tinker](https://thinkingmachines.ai/tinker/) fine-tuning runs.
-You freeze an eval set, sample each checkpoint against it, and flipbook tells
-you which examples got better, which got worse, what it cost, and where in the
-output the model's behavior changed. A checkpoint can improve on its objective every
-step while breaking on everything else, and nothing in the loop will tell you. Per-example
-evals can diagnose this in flight.
+Evaluate checkpoints on the same questions, compare scores and costs, and
+inspect the examples that improved or regressed.
 
 ## Try it without a key
 
@@ -16,15 +13,14 @@ uv run flipbook demo --synthetic
 uv run flipbook serve
 ```
 
-`demo --synthetic` writes a fabricated training study into a local store.
-`serve` opens the GUI at http://127.0.0.1:8484. The data is invented and
-labeled as such; it is there so every screen and command has something to show.
+`demo --synthetic` creates a study with clearly labeled synthetic data.
+`serve` opens the GUI at http://127.0.0.1:8484.
 
-Terminal equivalents of the GUI:
+To inspect it in the terminal:
 
 ```bash
-uv run flipbook status                                      # what is in the store
-uv run flipbook report synthetic                            # pass@1 arc + CI-gated verdict
+uv run flipbook status                                    # what is in the store
+uv run flipbook report synthetic                          # scores, verdict, and cost
 uv run flipbook compare synthetic/baseline synthetic/step24 # paired stats and per-example flips
 uv run flipbook show synthetic/step24 synthetic-1           # one question, every sample
 ```
@@ -40,8 +36,7 @@ export TINKER_API_KEY=...        # or put it in ~/.secrets/tinker.env
 uv run flipbook doctor           # checks key, store, GUI build
 ```
 
-Everything below is `uv run flipbook <command>`. Any command that samples a
-model prints a cost forecast first.
+Prefix the commands below with `uv run`. Sampling commands print a cost forecast first.
 
 **1. Freeze an eval set.** Rows, gold answers, and grader ids are hashed into a
 manifest so every run is scored on identical inputs.
@@ -63,10 +58,8 @@ flipbook eval --model thinkingmachines/Inkling-Small --manifest aime30 \
     --effort 0.9 --k 2 --study myrun --label baseline
 ```
 
-**3. Train with evals in the loop.** `RegressionEvaluator` is a cookbook
-`SamplingClientEvaluator`: add it to any training config's `evaluator_builders`
-and every evaluated checkpoint lands in the study, compared against the
-baseline, with divergence scored on the baseline's traces.
+**3. Evaluate during training.** Add `RegressionEvaluator` to your cookbook
+loop to compare checkpoints against a baseline and save the results as a study.
 
 ```python
 from flipbook.evaluator import RegressionEvaluator
@@ -79,13 +72,13 @@ evaluator = RegressionEvaluator(
 config = Config(..., eval_every=10, save_every=10, evaluator_builders=[lambda: evaluator])
 ```
 
-Works in the SFT and RL loops alike; `eval_every` should divide `save_every`
-so evaluated weights are the saved ones. The RL loop saves its final
-checkpoint without evaluating it, so call `await evaluator(client, step=N)`
-on it afterward (the RL recipe shows how). For a run that already finished,
-`flipbook track <log dir>` evaluates its saved checkpoints after the fact.
-Two complete recipes ship as examples (`flipbook train sft`, `flipbook train
-rl`); both print a cost forecast and stop unless you pass `--yes`.
+Use `evaluator_builders` for RL or `infrequent_evaluator_builders` for SFT.
+Set matching save and eval intervals so evaluated checkpoints are saved.
+If your loop skips the final evaluation, call `await evaluator(client, step=N)`
+on the final checkpoint; the example recipes show how.
+
+For a finished run, use `flipbook track <log dir> --manifest aime30 --study myrun`.
+The included SFT and RL recipes print a forecast and stop unless you pass `--yes`.
 
 ```bash
 flipbook train sft train --study myrun --manifest aime30     # SFT; evals each checkpoint into the study
@@ -97,10 +90,10 @@ flipbook eval myrun/final          # refs resolve checkpoint paths and inherit t
 
 ```bash
 flipbook status                         # studies, cost, which steps still lack divergence or effort data
-flipbook report myrun                   # the arc and the verdict
+flipbook report myrun                   # scores, verdict, and cost
 flipbook compare myrun/baseline myrun/final
 flipbook diverge --base myrun/baseline --ckpt myrun/final   # per-token logprob shift on the baseline's own traces
-flipbook effort --run myrun/final --pair 0.2,0.9            # does the effort setting still change the output
+flipbook effort --run myrun/final --pair 0.2,0.9           # compare trace likelihood at two effort settings
 flipbook serve
 ```
 
@@ -112,42 +105,34 @@ flipbook serve
 - **pass@1**: mean verdict per question. Works for binary and fractional graders.
 - **pass@n**: probability at least one of n samples is fully correct (unbiased estimator).
 - **score@n**: expected best score over n samples; shown when verdicts are not binary.
-- **delta, CI**: paired per-question change against the baseline with a bootstrap 95% interval. Deltas inside the interval are noise.
+- **delta, CI**: mean per-question score change against the baseline, with a bootstrap 95% confidence interval. If it includes zero, the result is inconclusive.
 - **flips**: questions that went right to wrong (regressions) or wrong to right (gains).
-- **failure kinds**: empty, truncation, parse, wrong_answer, partial. Tells you *how* a sample failed, not just that it did.
-- **divergence**: summed per-token logprob difference of a checkpoint against the baseline, scored on the baseline's own sampled traces. Measures how far the policy moved on those inputs.
+- **failure kinds**: labels such as empty, truncation, parse, wrong_answer, and partial.
+- **divergence**: summed logprob difference on the baseline's sampled traces. Positive means the checkpoint assigns them higher probability; negative means lower.
 - **p_skip**: probability the model ends its turn immediately.
-- **effort gap**: logprob difference between two effort settings. Near zero means the setting no longer does anything.
+- **effort gap**: logprob difference between two effort settings on the same traces. Near zero means little sensitivity on those traces.
 
 ## Design
 
-- The GUI is read-only. The CLI owns all sampling and all writes.
-- The store is a directory of Parquet and JSON files (`./flipbook_store`,
-  or `--store`, or `FLIPBOOK_STORE`). Copy it anywhere and `serve` it; the
-  server keeps no state.
-- Run identity is a hash of the eval config, so re-running an eval resumes
-  from what's already on disk instead of paying twice.
-- No math assumptions: the manifest picks the task, the grader picks the
-  score. `examples/` has a non-math setup.
+- The GUI is read-only. Sampling runs through the CLI or Python library.
+- Data lives in Parquet and JSON files under `./flipbook_store`. Override
+  the location with `--store` or `FLIPBOOK_STORE`.
+- Eval configs are hashed into run IDs. Repeating an eval reuses stored samples.
+- Custom tasks and graders are supported; see the language examples in `examples/`.
 
 ## What it catches
 
-The two failure shapes it was built for share one property: the training
-metrics look healthy the whole time, and the only evidence is on the
-held-out eval.
+- **Lower loss, worse answers.** SFT loss can fall while held-out accuracy
+  drops. Compare the failed examples, response lengths, and `p_skip` to
+  check for empty answers or shortened reasoning.
+- **Higher reward, worse answers.** An RL policy can earn more reward
+  without improving on held-out tasks. Compare reward against eval scores,
+  then inspect the examples that regressed.
 
-- **A fine-tune that stops reasoning.** Targets with no reasoning segment
-  teach a thinking model to skip it. Loss falls while pass@1 collapses;
-  the first symptoms are empty responses, rising `p_skip`, and divergence
-  on the baseline's own traces.
-- **A reward the policy can satisfy cheaply.** Pay for short or well-formed
-  outputs and the reward saturates while held-out responses thin out.
-  Length and divergence move before held-out accuracy does.
-
-`flipbook report <study>` prints the pass@1 arc across a study's
-checkpoints, then a verdict - regressed, improved, or within noise -
-chosen by whether the paired 95% CI excludes zero, with the metrics that
-moved first listed under it.
+`flipbook report <study>` prints checkpoint scores, a comparison verdict,
+supporting metrics, and recorded eval cost. Paired comparisons use a 95%
+confidence interval to distinguish improvement or regression from an
+inconclusive result.
 
 ## Development
 
