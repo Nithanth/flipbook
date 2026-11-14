@@ -22,7 +22,7 @@ export default function Rollouts({ study }: { study: string }) {
   if (error) return <p className="err">{error}</p>;
   if (!data || !split) return null;
   return (
-    <section className="card rollout-section" aria-label="training rollouts">
+    <section id="rollouts" className="card rollout-section" aria-label="training rollouts">
       <div className="row">
         <h2>training rollouts</h2>
         <Tip text="Metrics cover the imported rollout summaries. Transcripts are a logged sample with no reliable link to summary IDs.">
@@ -47,6 +47,11 @@ function SplitView({ study, split, data }: { study: string; split: string; data:
   const [compare, setCompare] = useState("");
   const [filter, setFilter] = useState("");
   const [sort, setSort] = useState("as_logged");
+  const transcriptsRef = useRef<HTMLHeadingElement>(null);
+  const pickIteration = (i: number) => {
+    setIteration(i);
+    transcriptsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
   const components = [...new Set(points.flatMap((p) => Object.keys(p.components)))].sort();
   const curves = [
     { name: "total reward", points: points.map((p) => ({ x: p.iteration, y: p.reward })) },
@@ -70,20 +75,20 @@ function SplitView({ study, split, data }: { study: string; split: string; data:
         Questions can differ between iterations; these trends are not paired eval comparisons.
       </p>
       {fractions.length > 0 && <RolloutChart title="reward and logged metrics (0–1)"
-        curves={fractions} fraction events={events} onSelect={setIteration} />}
+        curves={fractions} fraction events={events} selected={iteration} onSelect={pickIteration} />}
       {other.length > 0 && <>
         <label>other metric{" "}
           <select aria-label="other metric" value={otherMetric} onChange={(e) => setOtherMetric(e.target.value)}>
             {other.map((c) => <option key={c.name}>{c.name}</option>)}
           </select>
         </label>
-        {selected && <RolloutChart title={selected.name} curves={[selected]} onSelect={setIteration} />}
+        {selected && <RolloutChart title={selected.name} curves={[selected]} selected={iteration} onSelect={pickIteration} />}
       </>}
       {events.length > 0 && <div className="rollout-events">
         <p className="sub">Threshold hints: trailing 3-iteration means; not significance tests.</p>
         <ul>{events.map((e) => (
           <li key={`${e.component}-${e.kind}`}>
-            <button type="button" onClick={() => setIteration(e.iteration)}>
+            <button type="button" onClick={() => pickIteration(e.iteration)}>
               {e.component} {e.kind === "saturated" ? "reached ≥0.98" : "fell ≥0.10 from its prior peak"}
               {" "}at iteration {e.iteration} ({e.from.toFixed(2)} → {e.to.toFixed(2)})
             </button>
@@ -99,13 +104,13 @@ function SplitView({ study, split, data }: { study: string; split: string; data:
           <thead><tr><th>iteration</th><th>rollouts</th><th>transcripts</th><th>tokens</th>
             <th>reward</th>{components.map((k) => <th key={k}>{k} (n)</th>)}</tr></thead>
           <tbody>{points.map((p) => <tr key={p.iteration}>
-            <td><button type="button" onClick={() => setIteration(p.iteration)}>{p.iteration}</button></td>
+            <td><button type="button" onClick={() => pickIteration(p.iteration)}>{p.iteration}</button></td>
             <td>{p.n}</td><td>{p.n_texts}</td><td>{p.tokens.toFixed(0)}</td><td>{p.reward?.toFixed(3) ?? "—"}</td>
             {components.map((k) => <td key={k}>{p.components[k]?.toFixed(3) ?? "—"} ({p.component_n[k] ?? 0})</td>)}
           </tr>)}</tbody>
         </table></div>
       </details>
-      <h2>logged transcripts</h2>
+      <h2 ref={transcriptsRef}>logged transcripts</h2>
       <p className="sub">These are a sample, unlinked to the rollout IDs above.
         Side-by-side lists contain different questions, not matched before/after attempts.
         Length is in characters, not tokens.</p>
@@ -154,8 +159,9 @@ function SplitView({ study, split, data }: { study: string; split: string; data:
 type Curve = { name: string; points: { x: number; y: number | null }[] };
 const COLORS = ["var(--accent)", "var(--pos)", "var(--warn)", "var(--accent2)", "var(--neg)", "var(--muted)"];
 
-function RolloutChart({ title, curves, fraction = false, events = [], onSelect }: {
-  title: string; curves: Curve[]; fraction?: boolean; events?: RolloutEvent[]; onSelect: (i: number) => void;
+function RolloutChart({ title, curves, fraction = false, events = [], selected, onSelect }: {
+  title: string; curves: Curve[]; fraction?: boolean; events?: RolloutEvent[];
+  selected?: number; onSelect: (i: number) => void;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(775);
@@ -185,6 +191,10 @@ function RolloutChart({ title, curves, fraction = false, events = [], onSelect }
         </g>)}
         {[...new Set([x0, Math.round((x0 + x1) / 2), x1])].map((v) =>
           <text key={v} x={x(v)} y={161} textAnchor="middle">{v}</text>)}
+        {selected !== undefined && (
+          <rect x={x(selected) - 8} y={15} width={16} height={130}
+            fill="var(--accent)" opacity={0.1} pointerEvents="none" />
+        )}
         {curves.map((c, i) => {
           let move = true;
           const path = c.points.map((p) => {
