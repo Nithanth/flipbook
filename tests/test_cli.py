@@ -41,6 +41,35 @@ def test_report_ci_excluding_zero_is_regressed(tmp_path, capsys):
     assert "the fine-tune regressed this eval" in out
 
 
+def test_report_uses_provenance_baseline_over_unstepped_final(tmp_path, capsys):
+    # sft_ctrl shape: an unmeasured "final" checkpoint sits in the study, but
+    # the checkpoints name a shared baseline in another study
+    store = Store(tmp_path)
+    store.put_run({"run_id": "ext", "study": "other", "manifest_hash": "mh",
+                   "label": "baseline", "k": 1})
+    store.put_run({"run_id": "fin", "study": "s", "manifest_hash": "mh",
+                   "label": "final", "checkpoint_path": "tinker://x/final", "k": 1})
+    store.put_run({"run_id": "c", "study": "s", "manifest_hash": "mh",
+                   "label": "step5", "train_step": 5, "k": 1,
+                   "provenance": {"baseline_run_id": "ext", "train_step_measured": 5}})
+    for rid, vs in (("ext", [1] * 20), ("fin", [1] * 20), ("c", [0] * 20)):
+        store.put_samples(rid, [
+            {
+                "run_id": rid, "row_id": f"r{i}", "sample_idx": 0,
+                "text": "t", "prompt_tokens": 1, "gen_tokens": 10,
+                "stop_reason": "stop", "verdict": float(v),
+                "extracted": None, "failure_kind": None if v else "wrong_answer",
+                "error": None, "est_cost_usd": 0.0,
+            }
+            for i, v in enumerate(vs)
+        ])
+    _report(store, "s")
+    out = capsys.readouterr().out
+    # the arc starts at the shared baseline's score, not final's
+    assert "pass@1: 1.00 -> 0.00 (step 5)" in out
+    assert "compare other/baseline s/step5" in out
+
+
 def _reward_metrics(store, first, last, n=10):
     import numpy as np
 
