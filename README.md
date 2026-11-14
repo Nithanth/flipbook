@@ -114,6 +114,10 @@ flipbook serve
 
 ## Design
 
+- Tinker-integrated: evals accept model names or `tinker://` checkpoint
+  paths; `RegressionEvaluator` plugs into a cookbook config's
+  `evaluator_builders`; `track` reads cookbook log dirs. Costs come from
+  sampled token counts times the model's price.
 - The GUI is read-only. Sampling runs through the CLI or Python library.
 - Data lives in Parquet and JSON files under `./flipbook_store`. Override
   the location with `--store` or `FLIPBOOK_STORE`.
