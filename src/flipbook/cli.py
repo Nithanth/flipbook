@@ -350,7 +350,15 @@ def _report(store: Store, study: str, as_json: bool = False) -> int:
         return (r.get("train_step")
                 or (r.get("provenance") or {}).get("train_step_measured"))
 
-    base = next((r for r in runs if step(r) is None), None)
+    # checkpoints name their baseline in provenance; it may live in another
+    # study (shared base). a step-less run with a checkpoint_path is an
+    # unmeasured final, not a baseline - prefer it only as a last resort
+    by_id = {r["run_id"]: r for r in store.runs()}
+    refs = {(r.get("provenance") or {}).get("baseline_run_id") for r in runs} - {None}
+    base = (next((by_id[i] for i in sorted(refs) if i in by_id), None)
+            or next((r for r in runs
+                     if step(r) is None and not r.get("checkpoint_path")), None)
+            or next((r for r in runs if step(r) is None), None))
     ckpts = sorted((r for r in runs if step(r) is not None), key=step)
     if base is None or not ckpts:
         raise SystemExit(
