@@ -8,6 +8,7 @@ import json
 import time
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -19,6 +20,7 @@ from flipbook.budget import budget
 from flipbook.decode import thinking as _thinking
 from flipbook.decode import tokenizer as _tokenizer
 from flipbook.graders import strip_control_tokens
+from flipbook.rollouts import rollout_summary, rollout_texts
 from flipbook.stats import compare
 from flipbook.store import Store
 
@@ -334,7 +336,35 @@ def create_app(store_path: str | Path) -> FastAPI:
         d = store.path / "training_metrics"
         names = {f.stem for f in d.glob("*.parquet")} if d.exists() else set()
         names |= {r["study"] for r in _run_list() if r.get("study")}
+        names |= {f.stem for f in (store.path / "rollouts").glob("*.parquet")}
         return sorted(names)
+
+    def _rollout_path(study: str, directory: str) -> Path:
+        if study in (".", "..") or "/" in study or "\\" in study:
+            raise HTTPException(400, "invalid study name")
+        path = store.path / directory / f"{study}.parquet"
+        if not path.exists():
+            raise HTTPException(404, f"no {directory} for study {study}")
+        return path
+
+    @app.get("/api/rollouts/{study}")
+    def rollouts(study: str) -> dict:
+        _rollout_path(study, "rollouts")
+        return _cached(f"rollouts:{study}", lambda: rollout_summary(
+            _rows(store.rollouts(study)), _rows(store.rollout_texts(study))))
+
+    @app.get("/api/rollouts/{study}/texts")
+    def transcripts(
+        study: str, iteration: int, split: str = "train",
+        field: str | None = None, value: str | None = None,
+        sort: Literal["as_logged", "short", "long"] = "as_logged",
+        limit: int = Query(50, ge=1, le=100),
+    ) -> dict:
+        if (field is None) != (value is None):
+            raise HTTPException(400, "field and value must be supplied together")
+        _rollout_path(study, "rollout_texts")
+        texts = _cached(f"rollout_texts:{study}", lambda: _rows(store.rollout_texts(study)))
+        return rollout_texts(texts, split, iteration, field, value, sort, limit)
 
     @app.get("/api/studies/{name}")
     def study_detail(name: str) -> dict:
@@ -342,7 +372,7 @@ def create_app(store_path: str | Path) -> FastAPI:
             (_norm_run(r) for r in _run_list(name)),
             key=lambda r: r.get("train_step") if r.get("train_step") is not None else -1,
         )
-        if not sruns:
+        if not sruns and not (store.path / "rollouts" / f"{name}.parquet").exists():
             raise HTTPException(404, f"no study {name}")
         metrics: dict[str, list[dict]] = {}
         if (store.path / "training_metrics" / f"{name}.parquet").exists():
@@ -436,7 +466,8 @@ def create_app(store_path: str | Path) -> FastAPI:
                     if gaps:
                         effort[run] = sum(gaps) / len(gaps)
         return {"study": name, "runs": json.loads(json.dumps(sruns, default=str)),
-                "metrics": metrics, "effort_gap": effort}
+                "metrics": metrics, "effort_gap": effort,
+                "has_rollouts": (store.path / "rollouts" / f"{name}.parquet").exists()}
 
     @app.get("/api/budget/{run_id}")
     def run_budget(run_id: str) -> dict:

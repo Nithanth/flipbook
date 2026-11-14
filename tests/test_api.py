@@ -1,3 +1,6 @@
+import json
+
+import pytest
 from fastapi.testclient import TestClient
 
 from flipbook.api import create_app
@@ -306,3 +309,90 @@ def test_study_charts_shared_baseline(tmp_path):
     d = c.get("/api/studies/synthetic").json()
     assert base["run_id"] in {r["run_id"] for r in d["runs"]}
     assert {p["step"] for p in d["metrics"]["eval/pass1"]} == {0, 24, 48, 64}
+
+
+def test_rollout_summary_averages_episodes_and_marks_thresholds(tmp_path):
+    store = Store(tmp_path)
+    rows = []
+    for i, (a, b) in enumerate(zip([0.5, 0.6, 1, 1, 1, 1], [1, 1, 1, 1, 0.7, 0.6])):
+        for traj in range(2):
+            # A two-step episode and a one-step episode each get one vote.
+            for step in range(traj + 1):
+                rows.append({
+                    "split": "train", "iteration": i, "group_idx": 0, "traj_idx": traj,
+                    "step_idx": step, "ac_len": 10, "total_reward": -0.5,
+                    "metrics": json.dumps(
+                        {"a": a, "b": b, "n": 100} if step == traj else {"a": 0, "b": 0}),
+                })
+    store.put_rollouts("r", rows)
+    c = _client(tmp_path)
+    d = c.get("/api/rollouts/r").json()
+    assert d["coverage"] == {"train": {"rollouts": 12, "texts": 0}}
+    first = d["series"]["train"][0]
+    assert first["tokens"] == 15 and first["n"] == 2 and first["reward"] == -0.5
+    assert first["components"] == {"a": 0.5, "b": 1, "n": 100}
+    events = d["events"]["train"]
+    # a: trailing means .7, .867, 1 -> first saturation at iteration 4.
+    # b: trailing means 1, 1, .9 -> first 10-point drop at iteration 4.
+    assert {(e["component"], e["kind"], e["iteration"]) for e in events} == {
+        ("a", "saturated", 4), ("b", "falling", 4)}
+    assert next(e["to"] for e in events if e["component"] == "b") == pytest.approx(0.9)
+    assert c.get("/api/rollouts/missing").status_code == 404
+    assert "r" in c.get("/api/studies").json()
+    assert c.get("/api/studies/r").json()["runs"] == []
+
+
+def test_rollout_missing_metrics_are_not_zero_or_threshold_events(tmp_path):
+    store = Store(tmp_path)
+    store.put_rollouts("r", [
+        {"split": "train", "iteration": i, "group_idx": 0, "traj_idx": t,
+         "step_idx": 0, "ac_len": 10, "total_reward": 1,
+         "metrics": json.dumps({"a": 1, "b": float("nan")} if i == 0 and t == 0 else {})}
+        for i in range(4) for t in range(2)
+    ])
+    d = _client(tmp_path).get("/api/rollouts/r").json()
+    assert d["series"]["train"][0]["components"] == {"a": 1}
+    assert d["series"]["train"][0]["component_n"] == {"a": 1}
+    assert d["series"]["train"][1]["components"] == {}
+    assert d["events"]["train"] == []
+
+
+def test_rollout_transcript_filters_sorting_and_coverage(tmp_path):
+    store = Store(tmp_path)
+    store.put_rollouts("r", [
+        {"split": "train", "iteration": i, "group_idx": 0, "traj_idx": t,
+         "step_idx": 0, "ac_len": 10, "total_reward": 1, "metrics": "{}"}
+        for i in range(2) for t in range(4)
+    ])
+    store.put_rollout_texts("r", [
+        {"split": split, "iteration": i, "group_pos": 0, "traj_pos": t,
+         "prompt": json.dumps([
+             {"role": "user", "content": "few-shot example"},
+             {"role": "assistant", "content": "example answer"},
+             {"role": "user", "content": [{"type": "text", "text": "actual question"}]},
+         ]),
+         "thinking": "x" * length, "answer": "answer",
+         "reward_fields": json.dumps({"correct": correct, "reward": "1.0"})}
+        for split, i, t, length, correct in [
+            ("train", 0, 0, 10, "False"), ("train", 0, 1, 20, "False"),
+            ("train", 0, 2, 30, "True"), ("test", 0, 0, 10, "True"),
+        ]
+    ])
+    c = _client(tmp_path)
+    d = c.get("/api/rollouts/r").json()
+    assert d["coverage"]["train"] == {"rollouts": 8, "texts": 3}
+    assert [p["n_texts"] for p in d["series"]["train"]] == [3, 0]
+    assert d["text_fields"]["train"] == ["correct"]
+    params = {"iteration": 0, "field": "correct", "value": "False", "limit": 1}
+    d = c.get("/api/rollouts/r/texts", params={**params, "sort": "short"}).json()
+    assert d["iterations"] == [0] and d["total"] == 2 and len(d["rows"]) == 1
+    assert d["rows"][0]["traj_pos"] == 0 and d["rows"][0]["chars"] == 16
+    assert d["rows"][0]["question"] == "actual question"
+    d = c.get("/api/rollouts/r/texts", params={**params, "sort": "long"}).json()
+    assert d["rows"][0]["traj_pos"] == 1
+    assert c.get("/api/rollouts/r/texts?iteration=1").json()["rows"] == []
+    assert c.get("/api/rollouts/r/texts?iteration=0&field=correct").status_code == 400
+    assert c.get("/api/rollouts/r/texts?iteration=0&value=False").status_code == 400
+    assert c.get("/api/rollouts/r/texts?iteration=0&limit=0").status_code == 422
+    assert c.get("/api/rollouts/r/texts?iteration=0&sort=nope").status_code == 422
+    assert c.get("/api/rollouts/ghost/texts?iteration=0").status_code == 404
