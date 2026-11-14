@@ -472,3 +472,7 @@ h2 a.sub:hover { color: var(--accent); }
 .md th, .md td { border: 1px solid var(--border); padding: 3px 8px; }
 .md hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
 .md .katex-display { margin: 8px 0; }
+.rollout-group { border-top: 1px solid var(--border); padding-top: 8px; }
+.rollout-group .rollout-transcript { border-top: none; padding: 8px 0 8px 14px; }
+.rollout-fields span.vf { color: var(--pos); border-color: var(--pos); }
+.rollout-fields span.vt { color: var(--neg); border-color: var(--neg); }

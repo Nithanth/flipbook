@@ -235,10 +235,31 @@ function TranscriptList({ study, split, iteration, filter, sort }: {
       {error ? <p className="err">{error}</p> : !data ? <p className="sub">loading transcripts…</p> : <>
         <p className="sub">{data.total} matching · showing {data.rows.length}</p>
         {!data.rows.length && <p className="sub">No logged transcripts match this selection.</p>}
-        {data.rows.map((r) => <Transcript key={`${r.group_pos}-${r.traj_pos}`} row={r} />)}
+        {groups(data.rows).map(([gp, rs]) => (
+          <div className="rollout-group" key={gp}>
+            <details className="rollout-question">
+              <summary title={rs[0].question}>question {gp + 1} · {rs.length} logged attempt{rs.length === 1 ? "" : "s"}
+                {correctCount(rs) != null ? ` · ${correctCount(rs)} correct` : ""}
+                {" — "}{rs[0].question}</summary>
+              <Md text={rs[0].question} />
+            </details>
+            {rs.map((r) => <Transcript key={`${r.group_pos}-${r.traj_pos}`} row={r} />)}
+          </div>
+        ))}
       </>}
     </div>
   );
+}
+
+function groups(rows: RolloutText[]): [number, RolloutText[]][] {
+  const m = new Map<number, RolloutText[]>();
+  for (const r of rows) (m.get(r.group_pos) ?? m.set(r.group_pos, []).get(r.group_pos)!).push(r);
+  return [...m.entries()].sort((a, b) => a[0] - b[0]);
+}
+
+function correctCount(rs: RolloutText[]): number | null {
+  if (!rs.every((r) => "correct" in r.reward_fields)) return null;
+  return rs.filter((r) => r.reward_fields.correct === "True").length;
 }
 
 function Transcript({ row }: { row: RolloutText }) {
@@ -246,12 +267,8 @@ function Transcript({ row }: { row: RolloutText }) {
   return (
     <article className="rollout-transcript">
       <div className="sub">log position {row.group_pos + 1}.{row.traj_pos + 1} · {row.chars.toLocaleString()} chars</div>
-      <details className="rollout-question">
-        <summary title={row.question}>{row.question || "(no question text logged)"}</summary>
-        <Md text={row.question} />
-      </details>
       <div className="rollout-fields">{Object.entries(row.reward_fields).map(([k, v]) =>
-        <span key={k}>{k}: {v}</span>)}</div>
+        <span key={k} className={v === "True" ? "vf" : v === "False" ? "vt" : ""}>{k}: {v}</span>)}</div>
       {row.thinking ? <>
         <div className="mini-label">thinking</div>
         <pre>{full || row.thinking.length <= 240 ? row.thinking : `${row.thinking.slice(0, 240)}…`}</pre>
