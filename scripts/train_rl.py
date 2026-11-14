@@ -27,6 +27,7 @@ from tinker_cookbook.tokenizer_utils import get_tokenizer
 
 from flipbook.evaluator import RegressionEvaluator
 from flipbook.import_metrics import import_metrics
+from flipbook.import_rollouts import import_rollouts
 from flipbook.pricing import estimate_usd
 from flipbook.store import Store
 
@@ -284,7 +285,9 @@ def run_train(args) -> int:
         asyncio.run(evaluator(client, step=args.steps))
     # reward/kl/episode-length land next to pass@1 on the study page
     n = import_metrics(Store(args.store), args.log_dir, args.study or args.log_dir.name)
-    print(f"imported {n} training metrics into study {args.study or args.log_dir.name!r}")
+    imp = import_rollouts(Store(args.store), args.log_dir, args.study or args.log_dir.name)
+    print(f"imported {n} training metrics and {imp.n_rollouts} rollouts "
+          f"into study {args.study or args.log_dir.name!r}")
     return 0
 
 

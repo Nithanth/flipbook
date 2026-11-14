@@ -536,6 +536,8 @@ during training
   flipbook track <cookbook run dir> --manifest aime30 --study sft
   evaluates every checkpoint under a cookbook log dir and groups the runs
   into a study - that is what powers the study chart and 'the read'.
+  `flipbook import-rollouts <log dir> --study s` pulls the raw rollout
+  metrics and transcript sample into the store (offline, no sampling).
 
 run refs
   anywhere a run is taken, any of these works:
@@ -709,6 +711,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("path")
     _add_store(p)
     p = Sub("import-metrics", help="import metrics.jsonl from a cookbook log dir")
+    p.add_argument("log_dir")
+    p.add_argument("--study", required=True)
+    _add_store(p)
+    p = Sub("import-rollouts",
+            help="import rollout metrics + transcripts from a cookbook RL log dir")
     p.add_argument("log_dir")
     p.add_argument("--study", required=True)
     _add_store(p)
@@ -1199,6 +1206,17 @@ def main(argv: list[str] | None = None) -> int:
         from flipbook.import_metrics import import_metrics
         n = import_metrics(_store(args), args.log_dir, args.study)
         print(f"imported {n} metric rows for study {args.study}")
+        return 0
+    if args.cmd == "import-rollouts":
+        from flipbook.import_rollouts import import_rollouts
+        imp = import_rollouts(_store(args), args.log_dir, args.study)
+        print(f"imported {imp.n_rollouts:,} rollouts ({imp.iterations} iterations · "
+              f"splits: {', '.join(imp.splits)}) and {imp.n_texts:,} transcripts "
+              f"into study {args.study}")
+        cov = ", ".join(
+            f"{sp} {lo:.0%}-{hi:.0%} of rollouts"
+            for sp, (lo, hi) in sorted(imp.text_coverage.items()))
+        print(f"transcripts: {cov} · a logged sample, not linked to rollout ids")
         return 0
     if args.cmd == "train":
         # `train rl ...` -> train_rl.py; anything else -> train_demo.py (sft)
