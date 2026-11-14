@@ -12,6 +12,8 @@ flipbook_store/
   manifest_rows/   one Parquet per manifest: the rows
   runs/            one JSON per run: config, provenance, versions
   samples/         one Parquet per run: one row per (row_id, sample_idx)
+  rollouts/        one Parquet per study: one row per rollout step
+  rollout_texts/   one Parquet per study: sampled transcripts, keyed by log position
 ```
 
 ## Why Parquet + DuckDB
@@ -45,3 +47,25 @@ Two properties made this the choice over SQLite or a real database:
 
 DuckDB opens a fresh in-memory connection per query, so readers hold no
 shared state and need no locks.
+
+## Training rollouts
+
+Import cookbook logs with `flipbook import-rollouts <log dir> --study <name>`.
+The Study page shows reward, final-step metrics, response lengths, and a
+transcript browser. Studies with only imported rollouts also appear in the picker.
+
+Rollout summaries have iteration, group, trajectory, and step IDs. Charts
+average episodes: token counts sum the steps, total reward is counted once,
+and metrics come from the final step. The values table includes the number
+of episodes reporting each metric; missing metrics are not counted as zero.
+
+Logtree transcripts have positions rather than matching rollout IDs.
+They stay separate from the summaries, with coverage shown for each split
+and iteration. Transcript filters use only fields logged with the text;
+length sorting uses characters, since these records lack token counts.
+Side-by-side iteration lists are not paired comparisons of the same questions.
+
+Chart annotations use trailing three-iteration means: the first crossing
+of 0.98 from below, or a drop of 0.10 from the prior peak. They apply only
+to metrics with means in [0, 1] at every recorded iteration. These are
+inspection hints, not significance tests or evidence of a cause.

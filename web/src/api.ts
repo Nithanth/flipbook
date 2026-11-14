@@ -17,6 +17,50 @@ export interface StudyDetail {
   runs: Run[];
   metrics: Record<string, { step: number; value: number }[]>;
   effort_gap: Record<string, number>;
+  has_rollouts?: boolean;
+}
+
+export interface RolloutPoint {
+  iteration: number;
+  n: number;
+  n_texts: number;
+  tokens: number;
+  reward: number | null;
+  components: Record<string, number>;
+  component_n: Record<string, number>;
+}
+
+export interface RolloutEvent {
+  component: string;
+  kind: "saturated" | "falling";
+  iteration: number;
+  from: number;
+  to: number;
+}
+
+export interface RolloutSummary {
+  splits: string[];
+  series: Record<string, RolloutPoint[]>;
+  events: Record<string, RolloutEvent[]>;
+  coverage: Record<string, { rollouts: number; texts: number }>;
+  text_fields: Record<string, string[]>;
+}
+
+export interface RolloutText {
+  iteration: number;
+  group_pos: number;
+  traj_pos: number;
+  question: string;
+  thinking: string;
+  answer: string;
+  chars: number;
+  reward_fields: Record<string, string>;
+}
+
+export interface RolloutTexts {
+  iterations: number[];
+  total: number;
+  rows: RolloutText[];
 }
 
 export interface Manifest {
@@ -183,4 +227,7 @@ export const api = {
     ),
   studies: () => get<string[]>("/api/studies"),
   study: (name: string) => get<StudyDetail>(`/api/studies/${name}`),
+  rollouts: (study: string) => get<RolloutSummary>(`/api/rollouts/${encodeURIComponent(study)}`),
+  rolloutTexts: (study: string, params: URLSearchParams) =>
+    get<RolloutTexts>(`/api/rollouts/${encodeURIComponent(study)}/texts?${params}`),
 };
