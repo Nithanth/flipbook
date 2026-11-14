@@ -49,6 +49,8 @@ def test_final_checkpoint_gets_evaluated(tmp_path, monkeypatch):
             sampler_path="tinker://x/sampler_weights/final"),
     )
     monkeypatch.setattr(trl, "import_metrics", lambda *a, **k: 0)
+    monkeypatch.setattr(trl, "import_rollouts",
+                        lambda *a, **k: SimpleNamespace(n_rollouts=0))
 
     class SC:
         def create_sampling_client(self, **kw):
