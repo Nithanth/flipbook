@@ -90,6 +90,42 @@ TRAINING_METRICS = pa.schema(
     ]
 )
 
+ROLLOUTS = pa.schema(
+    [
+        ("study", pa.string()),
+        ("split", pa.string()),
+        ("iteration", pa.int32()),
+        ("policy_step", pa.int32()),
+        ("group_idx", pa.int32()),
+        ("traj_idx", pa.int32()),
+        ("step_idx", pa.int32()),
+        ("n_steps", pa.int32()),
+        ("total_reward", pa.float64()),
+        ("final_reward", pa.float64()),
+        ("step_reward", pa.float64()),
+        ("ob_len", pa.int32()),
+        ("ac_len", pa.int32()),
+        ("episode_done", pa.bool_()),
+        ("metrics", pa.string()),
+        ("trajectory_metrics", pa.string()),
+    ]
+)
+
+ROLLOUT_TEXTS = pa.schema(
+    [
+        ("study", pa.string()),
+        ("split", pa.string()),
+        ("iteration", pa.int32()),
+        ("group_pos", pa.int32()),
+        ("traj_pos", pa.int32()),
+        ("prompt", pa.string()),
+        ("response", pa.string()),
+        ("thinking", pa.string()),
+        ("answer", pa.string()),
+        ("reward_fields", pa.string()),
+    ]
+)
+
 
 class Store:
     def __init__(self, path: str | Path):
@@ -267,6 +303,26 @@ class Store:
     def training_metrics(self, study: str) -> pa.Table:
         f = self.path / "training_metrics" / f"{study}.parquet"
         return pq.read_table(f) if f.exists() else TRAINING_METRICS.empty_table()
+
+    def put_rollouts(self, study: str, records: list[dict]) -> None:
+        _merge_write(
+            self._dir("rollouts") / f"{study}.parquet",
+            ROLLOUTS, records, ("split", "iteration", "group_idx", "traj_idx", "step_idx"),
+        )
+
+    def rollouts(self, study: str) -> pa.Table:
+        f = self.path / "rollouts" / f"{study}.parquet"
+        return pq.read_table(f) if f.exists() else ROLLOUTS.empty_table()
+
+    def put_rollout_texts(self, study: str, records: list[dict]) -> None:
+        _merge_write(
+            self._dir("rollout_texts") / f"{study}.parquet",
+            ROLLOUT_TEXTS, records, ("split", "iteration", "group_pos", "traj_pos"),
+        )
+
+    def rollout_texts(self, study: str) -> pa.Table:
+        f = self.path / "rollout_texts" / f"{study}.parquet"
+        return pq.read_table(f) if f.exists() else ROLLOUT_TEXTS.empty_table()
 
     def has(self, run_id: str, row_id: str, sample_idx: int) -> bool:
         f = self.path / "samples" / f"{run_id}.parquet"
