@@ -79,6 +79,14 @@ export default function Study() {
         {detail && (
           <span className="sub">
             {detail.runs.length} runs · {nEvals} eval points
+            {detail.has_rollouts ? (
+              <>
+                {" · "}
+                <a href="#" onClick={(e) => { e.preventDefault();
+                  document.getElementById("rollouts")?.scrollIntoView({ behavior: "smooth" });
+                }}>rollouts</a>
+              </>
+            ) : null}
             {models.length === 1 ? ` · ${models[0]}` : ""}
             {detail.runs.some((r) => r.state === "running") ? " · sampling…" : ""}
             {touched ? ` · live · updated ${touched.toLocaleTimeString()}` : ""}
