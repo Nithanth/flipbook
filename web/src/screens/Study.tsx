@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { api, type Run, type StudyDetail } from "../api";
 import Tip from "../Tip";
+import Rollouts from "./Rollouts";
 
 /** Study dashboard: the whole story of one training run on one page. */
 export default function Study() {
@@ -87,12 +88,12 @@ export default function Study() {
       {err && <p className="err">{err}</p>}
       {detail && derived && derived.rows.length === 0 && (
         <div className="card read">
-          <div className="mini-label">no training metrics</div>
-          <p>
+          <div className="mini-label">{detail.has_rollouts ? "no checkpoint eval series" : "no training metrics"}</div>
+          {detail.has_rollouts ? <p>Imported rollouts are shown below. Add checkpoint evals to compare held-out performance.</p> : <p>
             this study has {detail.runs.length} eval run{detail.runs.length === 1 ? "" : "s"} but no
             tracked training loop - there's no step axis to chart. pair runs up in{" "}
             <a href="#/compare">compare</a> or browse them under <a href="#/evals">evals</a>.
-          </p>
+          </p>}
         </div>
       )}
       {detail && derived && derived.rows.length > 0 && (
@@ -100,9 +101,10 @@ export default function Study() {
           <Hero d={derived} go={go} />
           <Narrative d={derived} runs={detail.runs} />
           <MetricStrip d={derived} focus={focus} onFocus={setFocus} go={go} />
-          <StepTable d={derived} runs={detail.runs} />
         </>
       )}
+      {detail?.study === study && detail.has_rollouts && <Rollouts key={study} study={study} />}
+      {detail && derived && derived.rows.length > 0 && <StepTable d={derived} runs={detail.runs} />}
     </>
   );
 }
