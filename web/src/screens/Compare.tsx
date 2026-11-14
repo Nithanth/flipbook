@@ -86,9 +86,9 @@ export default function Compare() {
   ];
 
   useEffect(() => {
-    if (!a || !b || a === b) return;
     setPair(null);
     setErr(null);
+    if (!a || !b || a === b) return;
     api.compare(a, b).then(setPair).catch((e) => setErr(String(e)));
   }, [a, b]);
 
@@ -128,6 +128,9 @@ export default function Compare() {
             <div key={w}>⚠ {w}</div>
           ))}
         </div>
+      )}
+      {a && b && a === b && (
+        <p className="sub">same run on both sides - pick two different runs to compare</p>
       )}
       {pair && <Report pair={pair} runs={runs} />}
     </>
