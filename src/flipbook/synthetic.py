@@ -31,12 +31,12 @@ _QUESTIONS = [
     ("Compute (3 + 4) * (8 - 2) - 7.", "35"),
 ]
 
-# the collapse story: (label, train_step, acc@2-samples, p_skip, gen_length)
+# the collapse story: (label, train_step, acc@2-samples)
 _ARC = [
-    ("baseline", None, 0.85, 0.00, 1800),
-    ("step24", 24, 0.02, 0.62, 40),
-    ("step48", 48, 0.12, 0.15, 220),
-    ("final", 64, 0.05, 0.04, 140),
+    ("baseline", None, 0.85),
+    ("step24", 24, 0.02),
+    ("step48", 48, 0.12),
+    ("final", 64, 0.05),
 ]
 
 
@@ -114,7 +114,7 @@ def seed_synthetic(store: Store, *, seed: int = 0) -> str:
     store.put_manifest(man.to_doc(), man.rows)
 
     run_ids: dict[str, str] = {}
-    for label, step, acc, p_skip, gen_len in _ARC:
+    for label, step, acc in _ARC:
         rid = f"syn_{label}".ljust(12, "0")
         run_ids[label] = rid
         samples = []
