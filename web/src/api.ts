@@ -20,7 +20,7 @@ export interface StudyDetail {
   has_rollouts?: boolean;
 }
 
-export interface RolloutPoint {
+interface RolloutPoint {
   iteration: number;
   n: number;
   n_texts: number;
@@ -79,7 +79,7 @@ export interface DivergencePair {
   noise_floor: number | null;
 }
 
-export interface Flip {
+interface Flip {
   row_id: string;
   p_a: number;
   p_b: number;
