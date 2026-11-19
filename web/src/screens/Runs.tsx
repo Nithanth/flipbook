@@ -135,7 +135,7 @@ function trainTip(r: Run): string | undefined {
   return `${r.run_id}\n${step != null ? `step ${step} · ` : ""}${parts.join(" · ")}`;
 }
 
-export function shortModel(m?: string): string {
+function shortModel(m?: string): string {
   if (!m) return "";
   if (m.startsWith("tinker://")) return m.slice(-24);
   return m.split("/").pop() ?? m;
