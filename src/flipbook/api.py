@@ -476,7 +476,8 @@ def create_app(store_path: str | Path) -> FastAPI:
             raise HTTPException(404, f"no run {run_id}")
         return asdict(budget(store, run_id))
 
-    # serve the built frontend if web/dist exists (npm run build).
+    # serve the built frontend if web/dist exists (npm run build); without it
+    # the API still works, and / explains why the GUI is missing instead of 404
     dist = Path(__file__).parent.parent.parent / "web" / "dist"
     if dist.exists():
         app.mount("/assets", StaticFiles(directory=dist / "assets"), name="assets")
@@ -487,6 +488,18 @@ def create_app(store_path: str | Path) -> FastAPI:
         def spa(path: str) -> FileResponse:
             f = dist / path
             return FileResponse(f if f.is_file() else dist / "index.html")
+    else:
+        from fastapi.responses import HTMLResponse
+
+        @app.get("/{path:path}")
+        def no_gui(path: str) -> HTMLResponse:
+            return HTMLResponse(
+                "<html><body style='font-family:monospace;padding:2em'>"
+                "flipbook API is up, but the GUI was never built.<br><br>"
+                "Build it: <code>cd web &amp;&amp; npm install &amp;&amp; npm run build</code><br>"
+                "API docs meanwhile: <a href='/api/docs'>/api/docs</a>"
+                "</body></html>"
+            )
 
     return app
 

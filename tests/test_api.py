@@ -396,3 +396,16 @@ def test_rollout_transcript_filters_sorting_and_coverage(tmp_path):
     assert c.get("/api/rollouts/r/texts?iteration=0&limit=0").status_code == 422
     assert c.get("/api/rollouts/r/texts?iteration=0&sort=nope").status_code == 422
     assert c.get("/api/rollouts/ghost/texts?iteration=0").status_code == 404
+
+
+def test_root_without_gui_build_points_to_build_steps(tmp_path, monkeypatch):
+    # a checkout without `npm run build` should explain itself, not 404
+    from pathlib import Path
+
+    real = Path.exists
+    monkeypatch.setattr(Path, "exists",
+                        lambda p: False if p.name == "dist" else real(p))
+    c = TestClient(create_app(Store(tmp_path)))
+    r = c.get("/")
+    assert r.status_code == 200 and "npm run build" in r.text
+    assert c.get("/api/studies").status_code == 200

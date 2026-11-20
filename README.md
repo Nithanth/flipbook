@@ -10,11 +10,13 @@ inspect the examples that improved or regressed.
 git clone https://github.com/Nithanth/flipbook && cd flipbook
 uv sync
 uv run flipbook demo --synthetic
+cd web && npm install && npm run build && cd ..
 uv run flipbook serve
 ```
 
 `demo --synthetic` creates a study with clearly labeled synthetic data.
-`serve` opens the GUI at http://127.0.0.1:8484.
+`serve` opens the GUI at <http://127.0.0.1:8484>. Skip the `npm` step and
+`serve` still exposes the JSON API, with a note on the missing build.
 
 To inspect it in the terminal:
 
@@ -118,7 +120,9 @@ flipbook serve
   paths; `RegressionEvaluator` plugs into a cookbook config's
   `evaluator_builders`; `track` reads cookbook log dirs. Costs come from
   sampled token counts times the model's price.
-- The GUI is read-only. Sampling runs through the CLI or Python library.
+- The GUI never writes to the store. One exception: the divergence screen's
+  branch probe samples ~96 tokens per click from Tinker, labeled paid in place.
+  Everything else samples through the CLI or Python library.
 - Data lives in Parquet and JSON files under `./flipbook_store`. Override
   the location with `--store` or `FLIPBOOK_STORE`.
 - Eval configs are hashed into run IDs. Repeating an eval reuses stored samples.
