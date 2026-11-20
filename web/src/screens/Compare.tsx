@@ -485,6 +485,9 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
             })}
           </div>
           {(() => {
+            const changedN = pair.cells!.filter(
+              (c) => c.p_a != null && c.p_b != null && c.p_a !== c.p_b,
+            ).length;
             const flipsN = pair.cells!.filter(
               (c) => c.cell === "a_only" || c.cell === "b_only",
             ).length;
@@ -497,9 +500,9 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
               <p className="sub">
                 {flipsN} status flip{flipsN === 1 ? "" : "s"} · {softN} row
                 {softN === 1 ? "" : "s"} shifted reliability without flipping
-                {flipsN === 0 && softN === 0
+                {changedN === 0
                   ? " - identical row-level outcomes"
-                  : ""}
+                  : ` · ${changedN} row${changedN === 1 ? "" : "s"} with changed scores`}
               </p>
             );
           })()}
