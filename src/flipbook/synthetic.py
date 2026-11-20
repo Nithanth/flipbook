@@ -90,9 +90,16 @@ def _divergence_row(rng: random.Random, row_id: str, base_id: str, ckpt_id: str,
 
 def seed_synthetic(store: Store, *, seed: int = 0) -> str:
     """Write the synthetic manifest, four-run collapse arc, samples, divergence
-    traces, and a falling-loss series. Returns the study name. Idempotent-ish:
-    reruns overwrite the same run ids (labels clash -> warnings suppressed by
-    deterministic ids)."""
+    traces, and a falling-loss series. Returns the study name. Replaces earlier
+    synthetic demo runs, including those written with legacy ids."""
+    old_ids = {r["run_id"] for r in store.runs(STUDY) if r.get("source") == "synthetic"}
+    for rid in old_ids:
+        for directory, suffix in (("runs", ".json"), ("samples", ".parquet")):
+            (store.path / directory / f"{rid}{suffix}").unlink(missing_ok=True)
+    for directory in ("divergence", "effort"):
+        for path in (store.path / directory).glob("*.parquet"):
+            if old_ids.intersection(path.stem.split("__")):
+                path.unlink()
     rng = random.Random(seed)
     rows = [
         {
