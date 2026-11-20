@@ -464,8 +464,8 @@ def _report(store: Store, study: str, as_json: bool = False) -> int:
     if (gen[first_ck["run_id"]] and gen[last["run_id"]]
             and gen[last["run_id"]] / gen[first_ck["run_id"]] < 0.4):
         bullets.append(f"responses shrank {gen[first_ck['run_id']]:.0f} -> {gen[last['run_id']]:.0f} tokens "
-              f"({gen[first_ck['run_id']] / gen[last['run_id']]:.0f}x shorter) - it stopped reasoning, "
-              "not just got answers wrong")
+              f"({gen[first_ck['run_id']] / gen[last['run_id']]:.0f}x shorter) - shorter answers, "
+              "not just wrong ones")
     nll = [m for m in tm if m["key"] == "train/nll"]
     if len(nll) >= 2 and collapsed:
         bullets.append(f"train/nll kept falling {nll[0]['value']:.2f} -> {nll[-1]['value']:.2f} "
@@ -957,8 +957,25 @@ def main(argv: list[str] | None = None) -> int:
                     label_counts[r["label"]] = label_counts.get(r["label"], 0) + 1
             for lab in sorted(l for l, n in label_counts.items() if n > 1):
                 print(f"  warning: duplicate label {lab!r} - use run_id refs")
+            ro = store.rollouts(name)
+            if ro.num_rows:
+                trajs = set(zip(
+                    ro.column("split").to_pylist(),
+                    ro.column("iteration").to_pylist(),
+                    ro.column("group_idx").to_pylist(),
+                    ro.column("traj_idx").to_pylist()))
+                txt = store.rollout_texts(name)
+                print(f"  rollouts     {len(trajs)} trajectories"
+                      f" · {len(set(ro.column('iteration').to_pylist()))} iterations"
+                      + (f" · {txt.num_rows} logged transcripts" if txt.num_rows else ""))
             if not ckpts:
                 continue
+            def _ref(r, name=name, label_counts=label_counts):
+                lab = r.get("label")
+                # a duplicated label can't resolve back to one run
+                return f"{name}/{lab}" if lab and label_counts[lab] == 1 else r["run_id"]
+            store_flag = ("" if args.store == "./flipbook_store"
+                          else f" --store {args.store}")
             steps = [step(r) for r in ckpts]
             print(f"  checkpoints  {len(ckpts)} (steps {steps[0]}..{steps[-1]})")
             divdir, effdir = store.path / "divergence", store.path / "effort"
@@ -988,9 +1005,9 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 msteps = ", ".join(str(step(r)) for r in miss)
                 print(f"  {kind:<12} {len(have)}/{len(ckpts)} checkpoints  missing: step {msteps}")
-                c = f"{name}/{miss[0].get('label') or miss[0]['run_id']}"
-                b = f"{name}/{base.get('label') or base['run_id']}" if base else "BASE"
-                print(f"    fill: flipbook {hint.format(b=b, c=c)}")
+                c = _ref(miss[0])
+                b = _ref(base) if base else "BASE"
+                print(f"    fill: flipbook {hint.format(b=b, c=c)}{store_flag}")
         return 0
     if args.cmd in ("runs", "evals"):
         store = _store(args)
@@ -1083,12 +1100,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "budget":
         store = _store(args)
         b = budget(store, _run_id(store, args.run))
-        print(f"{b.n_samples} samples · {b.n_truncated} truncated · "
-              f"gen tok p50 {b.gen_p50:.0f} / p95 {b.gen_p95:.0f} / max {b.gen_max} · "
-              f"prompt {b.total_prompt_tokens:,} tok · gen {b.total_gen_tokens:,} tok"
-              + (f" · ~${b.est_cost_usd:.2f}" if b.est_cost_usd is not None else ""))
         if args.json:
             print(json.dumps(b.__dict__, indent=2))
+        else:
+            print(f"{b.n_samples} samples · {b.n_truncated} truncated · "
+                  f"gen tok p50 {b.gen_p50:.0f} / p95 {b.gen_p95:.0f} / max {b.gen_max} · "
+                  f"prompt {b.total_prompt_tokens:,} tok · gen {b.total_gen_tokens:,} tok"
+                  + (f" · ~${b.est_cost_usd:.2f}" if b.est_cost_usd is not None else ""))
         return 0
     if args.cmd == "compare":
         store = _store(args)
@@ -1217,6 +1235,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "import-rollouts":
         from flipbook.import_rollouts import import_rollouts
+        if not Path(args.log_dir).is_dir():
+            raise SystemExit(f"no such log dir: {args.log_dir}")
         imp = import_rollouts(_store(args), args.log_dir, args.study)
         print(f"imported {imp.n_rollouts:,} rollouts ({imp.iterations} iterations · "
               f"splits: {', '.join(imp.splits)}) and {imp.n_texts:,} transcripts "

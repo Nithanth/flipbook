@@ -211,3 +211,19 @@ def test_status_warns_on_duplicate_labels(tmp_path, capsys):
     main(["status", "--store", str(tmp_path)])
     out = capsys.readouterr().out
     assert "warning: duplicate label 'baseline' - use run_id refs" in out
+
+
+def test_budget_json_is_pure_json(tmp_path, capsys):
+    # piping into jq must not hit the human-readable summary line
+    store = Store(tmp_path)
+    _study(store, [1] * 4, [0] * 4)
+    main(["budget", "s/baseline", "--json", "--store", str(tmp_path)])
+    assert json.loads(capsys.readouterr().out)["n_samples"] == 4
+
+
+def test_import_rollouts_missing_dir_errors(tmp_path):
+    import pytest
+
+    with pytest.raises(SystemExit, match="no such log dir"):
+        main(["import-rollouts", str(tmp_path / "nope"), "--study", "x",
+              "--store", str(tmp_path)])
