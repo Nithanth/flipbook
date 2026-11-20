@@ -115,7 +115,7 @@ def seed_synthetic(store: Store, *, seed: int = 0) -> str:
 
     run_ids: dict[str, str] = {}
     for label, step, acc in _ARC:
-        rid = f"syn_{label}".ljust(12, "0")
+        rid = f"syn_{label}"
         run_ids[label] = rid
         samples = []
         for r in rows:
@@ -162,7 +162,7 @@ def seed_synthetic(store: Store, *, seed: int = 0) -> str:
             },
         })
 
-    # divergence traces: the -1800-nat cliff at step24, a milder one at final
+    # divergence traces: the cliff at step24, a milder one at final
     for label, ramp, skip_c in (("step24", 4.5, 0.62), ("final", 0.9, 0.04)):
         store.put_divergence(
             run_ids["baseline"], run_ids[label],

@@ -4,8 +4,11 @@ import Tip from "../Tip";
 import Md from "../Md";
 import { firstDivPos, Trace } from "../Trace";
 import { runLabel } from "../runLabel";
+import SyntheticNotice from "../SyntheticNotice";
+import { onRoute } from "../route";
 
 function hashParams(): URLSearchParams {
+  if (!onRoute("compare")) return new URLSearchParams();
   return new URLSearchParams(window.location.hash.split("?")[1] ?? "");
 }
 
@@ -13,6 +16,7 @@ function hashParams(): URLSearchParams {
  *  shareable. Selector picks push history; auto-picked defaults only
  *  replace state so they don't cost a history entry. */
 function writePairHash(a: string, b: string, push: boolean) {
+  if (!onRoute("compare")) return;
   const q = hashParams();
   if (a) q.set("a", a);
   else q.delete("a");
@@ -89,6 +93,7 @@ export default function Compare() {
   // pushed pair picks land here on browser back/forward
   useEffect(() => {
     const onHash = () => {
+      if (!onRoute("compare")) return;
       const a2 = hashParams().get("a") ?? "";
       setA(a2);
       setB(hashParams().get("b") ?? "");
@@ -129,6 +134,7 @@ export default function Compare() {
   return (
     <>
       <h1>compare</h1>
+      <SyntheticNotice runs={runs.filter((r) => r.run_id === a || r.run_id === b)} />
       <p className="page-sub">two runs graded on the same frozen questions - what changed?</p>
       <div className="row">
         <label>
@@ -472,7 +478,7 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
                     open === c.row_id ? " open" : ""
                   }`}
                   style={bg ? { background: bg } : undefined}
-                  title={`${c.q ? c.q + "\n" : ""}${c.row_id} · ${c.p_a == null ? "-" : c.p_a.toFixed(2)} → ${c.p_b == null ? "-" : c.p_b.toFixed(2)}${hard ? " · status flip" : dp && dp !== 0 ? " · reliability shift" : ""}`}
+                  title={`${c.q ? c.q + "\n" : ""}${c.row_id} · ${c.p_a == null ? "-" : c.p_a.toFixed(2)} → ${c.p_b == null ? "-" : c.p_b.toFixed(2)}${hard ? " · status flip" : dp != null && Math.abs(dp) >= 0.5 ? " · reliability shift" : ""}`}
                   onClick={() => setOpen(open === c.row_id ? null : c.row_id)}
                 />
               );
@@ -484,7 +490,7 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
             ).length;
             const softN = pair.cells!.filter(
               (c) =>
-                c.p_a != null && c.p_b != null && c.p_b !== c.p_a &&
+                c.p_a != null && c.p_b != null && Math.abs(c.p_b - c.p_a) >= 0.5 &&
                 c.cell !== "a_only" && c.cell !== "b_only",
             ).length;
             return (

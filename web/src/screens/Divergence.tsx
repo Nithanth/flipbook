@@ -4,6 +4,7 @@ import Tip from "../Tip";
 import { BranchView, Spark, TraceView } from "../Trace";
 import Md from "../Md";
 import { runLabel } from "../runLabel";
+import SyntheticNotice from "../SyntheticNotice";
 
 export default function Divergence() {
   const [pairs, setPairs] = useState<Pair[]>([]);
@@ -63,6 +64,7 @@ export default function Divergence() {
   return (
     <>
       <h1>divergence</h1>
+      <SyntheticNotice runs={runs.filter((r) => sel.split("__").includes(r.run_id))} />
       <p className="page-sub">where in the baseline's own reasoning do the two models stop agreeing?</p>
       {pairs.length === 0 ? (
         <p className="sub">

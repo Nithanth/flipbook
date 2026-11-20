@@ -47,6 +47,7 @@ class PairReport:
     failure_rows_b: dict[str, list[str]] = field(default_factory=dict)
     # {ok, blocks, warnings, token_views}; {} when a run record is missing
     comparability: dict = field(default_factory=dict)
+    reliability_shifts: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -226,12 +227,17 @@ def compare(store: Store, run_a: str, run_b: str) -> PairReport:
     flips = [
         {
             "row_id": r, "p_a": float(x), "p_b": float(y),
-            "kind": "regression" if x - y >= FLIP_DELTA else "gain",
+            "kind": "regression" if x > y else "gain",
             "hard": (x, y) in ((1.0, 0.0), (0.0, 1.0)),
             "q": q_by_row.get(r),
         }
         for r, x, y in zip(common, pa_v, pb_v)
-        if abs(float(y) - float(x)) >= FLIP_DELTA
+        if (x >= 0.5) != (y >= 0.5)
+    ]
+    reliability_shifts = [
+        {"row_id": r, "p_a": float(x), "p_b": float(y), "q": q_by_row.get(r)}
+        for r, x, y in zip(common, pa_v, pb_v)
+        if (x >= 0.5) == (y >= 0.5) and abs(float(y) - float(x)) >= FLIP_DELTA
     ]
 
     # pass@n over the paired rows, for every n both runs' k can support
@@ -309,7 +315,7 @@ def compare(store: Store, run_a: str, run_b: str) -> PairReport:
         acc_b=float(pb_v.mean()) if len(pb_v) else 0.0,
         delta=float(d.mean()) if len(d) else 0.0,
         delta_ci=_boot_ci(d),
-        agreement=agreement, flips=flips,
+        agreement=agreement, flips=flips, reliability_shifts=reliability_shifts,
         tokens={"a": _tok_stats(sa), "b": _tok_stats(sb)},
         delta_tokens=float((gb - ga).mean()) if len(common) else 0.0,
         delta_tokens_ci=_boot_ci(gb - ga),
