@@ -135,7 +135,8 @@ select:hover { border-color: var(--muted); }
 .rollout-events ul { padding-left: 18px; }
 .rollout-events li { margin-bottom: 5px; }
 .rollout-events button { text-align: left; }
-.rollout-data summary, .rollout-question summary { cursor: pointer; }
+.rollout-data summary, .rollout-question summary, .rollout-transcript summary { cursor: pointer; }
+.rollout-transcript summary { font-size: 12.5px; color: var(--muted); }
 .rollout-table { overflow-x: auto; }
 .rollout-table th, .rollout-table td { white-space: nowrap; }
 .rollout-columns { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
@@ -448,6 +449,10 @@ h2 a.sub:hover { color: var(--accent); }
   .mini { min-width: 0; }
   /* block + overflow lets a too-wide table scroll instead of pushing the page */
   table { display: block; overflow-x: auto; }
+  /* svg charts scale by viewBox - under ~600px the axis text shrinks past
+     readable, so scroll a fixed-width chart instead */
+  .hero, .chartscroll { overflow-x: auto; }
+  .hero .chart, .chartscroll .chart { min-width: 600px; max-width: none; }
 }
 
 /* markdown inside question/sample panels */

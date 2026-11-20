@@ -3,13 +3,27 @@ import { api, type Run, type StudyDetail } from "../api";
 import Tip from "../Tip";
 import Rollouts from "./Rollouts";
 
+function hashParams(): URLSearchParams {
+  return new URLSearchParams(window.location.hash.split("?")[1] ?? "");
+}
+
+/** The picked study lives in the hash so the view survives refresh and is
+ *  shareable. A dropdown pick pushes history; the auto-picked default only
+ *  replaces state so it doesn't cost a history entry. */
+function writeStudyHash(name: string, push: boolean) {
+  const q = hashParams();
+  q.delete("iter"); // iteration numbers don't carry across studies
+  q.set("name", name);
+  const url = `#/study?${q}`;
+  if (push) window.location.hash = url;
+  else window.history.replaceState(null, "", url);
+}
+
 /** Study dashboard: the whole story of one training run on one page. */
 export default function Study() {
   const [studies, setStudies] = useState<string[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
-  const [study, setStudy] = useState(
-    new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("name") ?? "",
-  );
+  const [study, setStudy] = useState(hashParams().get("name") ?? "");
   const [detail, setDetail] = useState<StudyDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -27,7 +41,15 @@ export default function Study() {
     for (const r of runs) if (r.study) counts.set(r.study, (counts.get(r.study) ?? 0) + 1);
     const best = [...studies].sort((a, b) => (counts.get(b) ?? 0) - (counts.get(a) ?? 0))[0];
     setStudy(best);
+    writeStudyHash(best, false);
   }, [studies, runs, study]);
+
+  // pushed study picks land here on browser back/forward
+  useEffect(() => {
+    const onHash = () => setStudy(hashParams().get("name") ?? "");
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   useEffect(() => {
     if (!study) return;
@@ -54,6 +76,10 @@ export default function Study() {
   const base = detail?.runs.find(
     (r) => r.label === "baseline" || r.label === "base" || r.train_step == null,
   );
+  const pickStudy = (name: string) => {
+    setStudy(name);
+    writeStudyHash(name, true);
+  };
   const go = (step: number) => {
     const r = detail?.runs.find((x) => x.train_step === step);
     if (base && r && r.run_id !== base.run_id)
@@ -70,7 +96,7 @@ export default function Study() {
       <div className="row">
         <label>
           study{" "}
-          <select value={study} onChange={(e) => setStudy(e.target.value)}>
+          <select value={study} onChange={(e) => pickStudy(e.target.value)}>
             {studies.map((s) => (
               <option key={s}>{s}</option>
             ))}
@@ -658,18 +684,15 @@ function Narrative({ d, runs }: { d: Derived; runs: Run[] }) {
       href: cmp(last.step),
     });
   } else if (peak.pass1! - trough.pass1! > 0.05) {
-    // a "peak" inside the CI of the first point is noise - anchor on where it held
+    // a "peak" inside the CI of the first point is noise - report measured points
     const realPeak = peak.step !== first.step && peak.ci && peak.ci[0] > 0;
-    const held = cliff ? evals[Math.max(0, evals.indexOf(cliff) - 1)] : peak;
     const open = realPeak
       ? `pass@1 rose to ${pct(peak.pass1!)} (step ${peak.step})`
-      : held.step === first.step
-        ? `pass@1 started at ${pct(first.pass1!)} (step ${first.step})`
-        : `pass@1 held near ${pct(first.pass1!)} through step ${held.step}`;
+      : `pass@1 was ${pct(first.pass1!)} at step ${first.step}`;
     bullets.push({
       t:
-        `${open}, then fell to ${pct(trough.pass1!)} by step ${trough.step}` +
-        (last.pass1! > trough.pass1! + 0.02 ? ` - ending at ${pct(last.pass1!)} (step ${last.step})` : ` and stayed there`),
+        `${open}; lowest observed ${pct(trough.pass1!)} at step ${trough.step}` +
+        (last.step !== trough.step ? `; latest observed ${pct(last.pass1!)} (step ${last.step})` : ""),
       href: cmp(trough.step),
     });
   } else {
@@ -851,16 +874,18 @@ function FocusChart({
   // an empty series has no y domain - render the frame, not Infinity axes
   if (pts.length === 0) {
     return (
-      <svg viewBox={`0 0 ${w} ${h}`} width="100%" className="chart focus">
-        <line x1={pad} x2={w - pad} y1={h - pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
-        <line x1={pad} x2={pad} y1={pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
-        <text x={w / 2} y={h / 2} textAnchor="middle" style={{ fill: "var(--muted)" }} fontSize={11}>
-          no {label} computed yet
-        </text>
-        <text x={w - pad} y={16} textAnchor="end" style={{ fill: "var(--muted)" }} fontSize={11}>
-          {label}{ghostLabel ? `  ·  ┅ ${ghostLabel}` : ""}
-        </text>
-      </svg>
+      <div className="chartscroll">
+        <svg viewBox={`0 0 ${w} ${h}`} width="100%" className="chart focus">
+          <line x1={pad} x2={w - pad} y1={h - pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
+          <line x1={pad} x2={pad} y1={pad} y2={h - pad} style={{ stroke: "var(--border)" }} />
+          <text x={w / 2} y={h / 2} textAnchor="middle" style={{ fill: "var(--muted)" }} fontSize={11}>
+            no {label} computed yet
+          </text>
+          <text x={w - pad} y={16} textAnchor="end" style={{ fill: "var(--muted)" }} fontSize={11}>
+            {label}{ghostLabel ? `  ·  ┅ ${ghostLabel}` : ""}
+          </text>
+        </svg>
+      </div>
     );
   }
   const [y0, y1] = [Math.min(...pts.map((p) => p.y)), Math.max(...pts.map((p) => p.y))];
@@ -892,6 +917,7 @@ function FocusChart({
     setHover(best);
   };
   return (
+    <div className="chartscroll">
     <svg
       viewBox={`0 0 ${w} ${h}`}
       width="100%"
@@ -973,6 +999,7 @@ function FocusChart({
         {label}{ghostLabel ? `  ·  ┅ ${ghostLabel}` : ""}
       </text>
     </svg>
+    </div>
   );
 }
 
@@ -1016,7 +1043,7 @@ function StepTable({ d, runs }: { d: Derived; runs: Run[] }) {
             <th><Tip text="Accuracy on the frozen eval manifest at this checkpoint.">pass@1</Tip></th>
             <th><Tip text="fraction of questions where at least one of the k samples was correct - the headroom above pass@1">p@k</Tip></th>
             <th><Tip text="Paired per-question accuracy change vs baseline, with a bootstrap 95% CI over questions. Deltas inside the noise band (~±0.07 at n=30, k=2) are inconclusive.">Δ vs base</Tip></th>
-            <th><Tip text="Questions that changed correctness vs baseline. R = right→wrong regressions, G = wrong→right gains. Noise flips are roughly symmetric; one-directional flips signal a real shift.">flips</Tip></th>
+            <th><Tip text="Questions that changed correctness vs baseline. R = right→wrong regressions, G = wrong→right gains. Noise flips are roughly symmetric; flips leaning one way are a stronger sign than an even split.">flips</Tip></th>
             <th><Tip text="Fraction of samples truncated at the max-token cap.">trunc</Tip></th>
             <th><Tip text="Average response length in tokens.">gen tok</Tip></th>
             <th><Tip text="Mean per-token log-prob shift of the checkpoint vs base, scored on the baseline's own traces. Positive = the checkpoint assigns the baseline's traces higher probability than the baseline did (sharpened onto its own distribution); negative = it moved away from them.">div nats</Tip></th>

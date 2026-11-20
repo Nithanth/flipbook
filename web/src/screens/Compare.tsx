@@ -9,6 +9,22 @@ function hashParams(): URLSearchParams {
   return new URLSearchParams(window.location.hash.split("?")[1] ?? "");
 }
 
+/** The picked pair lives in the hash so the view survives refresh and is
+ *  shareable. Selector picks push history; auto-picked defaults only
+ *  replace state so they don't cost a history entry. */
+function writePairHash(a: string, b: string, push: boolean) {
+  const q = hashParams();
+  if (a) q.set("a", a);
+  else q.delete("a");
+  if (b) q.set("b", b);
+  else q.delete("b");
+  q.delete("row"); // a row deep link only names a row of the old pair
+  const s = `${q}`;
+  const url = `#/compare${s ? `?${s}` : ""}`;
+  if (push) window.location.hash = url;
+  else window.history.replaceState(null, "", url);
+}
+
 export default function Compare() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [mh, setMh] = useState("");
@@ -61,16 +77,34 @@ export default function Compare() {
       if (!chosen) return;
       setMh(chosen[0].manifest_hash ?? "");
       const [first, last] = defaultPair(chosen);
-      if (!a) setA(first);
-      if (!b) setB(last);
+      if (!a || !b) {
+        const next: [string, string] = [a || first, b || last];
+        setA(next[0]);
+        setB(next[1]);
+        writePairHash(next[0], next[1], false);
+      }
     });
   }, []);
+
+  // pushed pair picks land here on browser back/forward
+  useEffect(() => {
+    const onHash = () => {
+      const a2 = hashParams().get("a") ?? "";
+      setA(a2);
+      setB(hashParams().get("b") ?? "");
+      const m = runs.find((r) => r.run_id === a2)?.manifest_hash;
+      if (m) setMh(m);
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, [runs]);
 
   const pickManifest = (v: string) => {
     setMh(v);
     const [first, last] = defaultPair(runs.filter((r) => (r.manifest_hash ?? "") === v));
     setA(first);
     setB(last);
+    writePairHash(first, last, true);
   };
 
   const manifestGroups = [...new Map(runs.map((r) => [r.manifest_hash ?? "", r])).entries()];
@@ -115,8 +149,8 @@ export default function Compare() {
             })}
           </select>
         </label>
-        <RunPicker label="base" runs={onManifest} value={a} onChange={setA} other={runs.find((r) => r.run_id === b)} />
-        <RunPicker label="ckpt" runs={onManifest} value={b} onChange={setB} other={runs.find((r) => r.run_id === a)} />
+        <RunPicker label="base" runs={onManifest} value={a} onChange={(v) => { setA(v); writePairHash(v, b, true); }} other={runs.find((r) => r.run_id === b)} />
+        <RunPicker label="ckpt" runs={onManifest} value={b} onChange={(v) => { setB(v); writePairHash(a, v, true); }} other={runs.find((r) => r.run_id === a)} />
       </div>
       {pair && (
         <ContextLine pair={pair} runs={runs} />
@@ -572,7 +606,7 @@ function PairRead({ pair }: { pair: PairReport }) {
   const bullets: string[] = [
     `accuracy ${pct(pair.acc_a)} → ${pct(pair.acc_b)}; Δ ${pair.delta >= 0 ? "+" : ""}${pair.delta.toFixed(3)} with 95% CI [${lo.toFixed(3)}, ${hi.toFixed(3)}] - ${
       hi < 0 || lo > 0
-        ? "the CI excludes zero: this is a real change, not sampling noise"
+        ? "the CI excludes zero: unlikely to be noise at this n"
         : "the CI includes zero: inconclusive at this sample size"
     }`,
   ];
@@ -583,7 +617,7 @@ function PairRead({ pair }: { pair: PairReport }) {
     bullets.push(
       `${regs} regressions vs ${gains} gains - ${
         Math.min(regs, gains) <= 0.15 * Math.max(regs, gains)
-          ? "one-directional, which sampling noise doesn't produce"
+          ? "all flips go one way"
           : "roughly symmetric, consistent with noise"
       }`,
     );

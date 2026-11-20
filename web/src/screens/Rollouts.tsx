@@ -43,10 +43,22 @@ function SplitView({ study, split, data }: { study: string; split: string; data:
   const points = data.series[split];
   const coverage = data.coverage[split];
   const iterations = points.filter((p) => p.n_texts > 0).map((p) => p.iteration);
-  const [iteration, setIteration] = useState(iterations.at(-1) ?? points[points.length - 1].iteration);
+  const [iteration, setIteration] = useState(() => {
+    const raw = new URLSearchParams(window.location.hash.split("?")[1] ?? "").get("iter");
+    const q = raw == null ? NaN : Number(raw);
+    return points.some((p) => p.iteration === q)
+      ? q
+      : iterations.at(-1) ?? points[points.length - 1].iteration;
+  });
   const [compare, setCompare] = useState("");
   const [filter, setFilter] = useState("");
   const [sort, setSort] = useState("as_logged");
+  // mirror the pick into the hash so an iteration view is shareable
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
+    q.set("iter", String(iteration));
+    window.history.replaceState(null, "", `${window.location.hash.split("?")[0]}?${q}`);
+  }, [iteration]);
   const transcriptsRef = useRef<HTMLHeadingElement>(null);
   const pickIteration = (i: number) => {
     setIteration(i);
@@ -132,8 +144,8 @@ function SplitView({ study, split, data }: { study: string; split: string; data:
           <label>sort{" "}
             <select aria-label="sort" value={sort} onChange={(e) => setSort(e.target.value)}>
               <option value="as_logged">as logged</option>
-              <option value="short">shortest (chars)</option>
-              <option value="long">longest (chars)</option>
+              <option value="short">shortest (within group)</option>
+              <option value="long">longest (within group)</option>
             </select>
           </label>
         </div>
@@ -226,6 +238,7 @@ function TranscriptList({ study, split, iteration, filter, sort }: {
   study: string; split: string; iteration: number; filter: string; sort: string;
 }) {
   const [data, setData] = useState<RolloutTexts | null>(null);
+  const [sizes, setSizes] = useState<Record<number, number> | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
     let active = true;
@@ -239,23 +252,40 @@ function TranscriptList({ study, split, iteration, filter, sort }: {
     }).catch((e) => { if (active) setError(String(e)); });
     return () => { active = false; };
   }, [study, split, iteration, filter, sort]);
+  // the API has no per-group total; while a filter hides attempts, count it
+  // from the unfiltered page - skipped when that page itself is truncated
+  useEffect(() => {
+    if (!filter) return;
+    let active = true;
+    const params = new URLSearchParams({ split, iteration: String(iteration), limit: "100" });
+    api.rolloutTexts(study, params).then((d) => {
+      if (!active || d.total > d.rows.length) return;
+      const m: Record<number, number> = {};
+      for (const r of d.rows) m[r.group_pos] = (m[r.group_pos] ?? 0) + 1;
+      setSizes(m);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [study, split, iteration, filter]);
   return (
     <div className="rollout-list">
       <h3>iteration {iteration}</h3>
       {error ? <p className="err">{error}</p> : !data ? <p className="sub">loading transcripts…</p> : <>
         <p className="sub">{data.total} matching · showing {data.rows.length}</p>
         {!data.rows.length && <p className="sub">No logged transcripts match this selection.</p>}
-        {groups(data.rows).map(([gp, rs]) => (
-          <div className="rollout-group" key={gp}>
-            <details className="rollout-question">
-              <summary title={rs[0].question}>question {gp + 1} · {rs.length} logged attempt{rs.length === 1 ? "" : "s"}
-                {correctCount(rs) != null ? ` · ${correctCount(rs)} correct` : ""}
-                {" — "}{rs[0].question}</summary>
-              <Md text={rs[0].question} />
-            </details>
-            {rs.map((r) => <Transcript key={`${r.group_pos}-${r.traj_pos}`} row={r} />)}
-          </div>
-        ))}
+        {groups(data.rows).map(([gp, rs]) => {
+          const size = sizes?.[gp];
+          return (
+            <div className="rollout-group" key={gp}>
+              <details className="rollout-question">
+                <summary title={rs[0].question}>question {gp + 1} · {size != null ? `${rs.length} of ${size}` : rs.length} logged attempt{(size ?? rs.length) === 1 ? "" : "s"}
+                  {correctCount(rs) != null ? ` · ${correctCount(rs)} correct` : ""}
+                  {" — "}{rs[0].question}</summary>
+                <Md text={rs[0].question} />
+              </details>
+              {rs.map((r) => <Transcript key={`${r.group_pos}-${r.traj_pos}`} row={r} />)}
+            </div>
+          );
+        })}
       </>}
     </div>
   );
@@ -274,9 +304,14 @@ function correctCount(rs: RolloutText[]): number | null {
 
 function Transcript({ row }: { row: RolloutText }) {
   const [full, setFull] = useState(false);
+  const ok = "correct" in row.reward_fields ? row.reward_fields.correct === "True" : null;
   return (
-    <article className="rollout-transcript">
-      <div className="sub">log position {row.group_pos + 1}.{row.traj_pos + 1} · {row.chars.toLocaleString()} chars</div>
+    <details className="rollout-transcript">
+      <summary>
+        attempt {row.traj_pos + 1}
+        {ok != null && <>{" "}<span className={`badge ${ok ? "pos" : "neg"}`}>{ok ? "✓ correct" : "✗ wrong"}</span></>}
+        {" · "}{row.chars.toLocaleString()} chars
+      </summary>
       <div className="rollout-fields">{Object.entries(row.reward_fields).map(([k, v]) =>
         <span key={k} className={v === "True" ? "vf" : v === "False" ? "vt" : ""}>{k}: {v}</span>)}</div>
       {row.thinking ? <>
@@ -288,6 +323,6 @@ function Transcript({ row }: { row: RolloutText }) {
       </> : <p className="sub">no thinking text logged</p>}
       <div className="mini-label">answer</div>
       {row.answer ? <Md text={row.answer} /> : <p className="sub">no answer text logged</p>}
-    </article>
+    </details>
   );
 }
