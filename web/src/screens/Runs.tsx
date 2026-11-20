@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type Run } from "../api";
 import { runLabel } from "../runLabel";
+import SyntheticNotice from "../SyntheticNotice";
 
 export default function Runs() {
   const [runs, setRuns] = useState<Run[] | null>(null);
@@ -54,6 +55,7 @@ export default function Runs() {
       </p>
       {studies.map((s) => (
         <section key={s}>
+          <SyntheticNotice runs={runs.filter((r) => (r.study ?? "ungrouped") === s)} />
           <h2>
             {s}
             {s !== "ungrouped" && (

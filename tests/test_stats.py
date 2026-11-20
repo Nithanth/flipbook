@@ -82,6 +82,27 @@ def test_k2_partial_rates_and_threshold(tmp_path):
     assert p.acc_a == 0.75 and p.acc_b == 0.25
 
 
+def test_majority_flips_and_reliability_shifts(tmp_path):
+    store = Store(tmp_path)
+    _run(store, "a", {0: [1, 1], 1: [1, 0], 2: [0, 0], 3: [1, 1]}, k=2)
+    _run(store, "b", {0: [1, 0], 1: [0, 0], 2: [1, 0], 3: [1, 1]}, k=2)
+    pair = compare(store, "a", "b")
+    assert [(f["row_id"], f["kind"]) for f in pair.flips] == [
+        ("r1", "regression"), ("r2", "gain")]
+    assert [f["row_id"] for f in pair.reliability_shifts] == ["r0"]
+    assert pair.agreement == {"both_right": 2, "both_wrong": 0, "a_only": 1, "b_only": 1}
+    assert len(pair.flips) == pair.agreement["a_only"] + pair.agreement["b_only"]
+
+
+def test_small_majority_crossing_is_a_flip(tmp_path):
+    store = Store(tmp_path)
+    _run(store, "a", {0: [0.6]}, k=1)
+    _run(store, "b", {0: [0.4]}, k=1)
+    pair = compare(store, "a", "b")
+    assert len(pair.flips) == 1 and pair.flips[0]["kind"] == "regression"
+    assert pair.reliability_shifts == []
+
+
 def test_pass_at_n(tmp_path):
     store = Store(tmp_path)
     _run(store, "a", {0: [1, 1, 0, 0], 1: [0, 0, 0, 0]}, k=4)
@@ -170,6 +191,7 @@ def test_no_pairs_is_empty_not_crash(tmp_path):
     _run(store, "b", {1: [1]})
     p = compare(store, "a", "b")
     assert p.n_pairs == 0 and p.delta == 0.0
+    assert p.flips == [] and p.reliability_shifts == []
     ok, _ = gate(p)
     assert ok
 

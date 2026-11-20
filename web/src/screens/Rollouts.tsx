@@ -55,6 +55,7 @@ function SplitView({ study, split, data }: { study: string; split: string; data:
   const [sort, setSort] = useState("as_logged");
   // mirror the pick into the hash so an iteration view is shareable
   useEffect(() => {
+    if (!/^#\/study(?:\?|$)/.test(window.location.hash)) return;
     const q = new URLSearchParams(window.location.hash.split("?")[1] ?? "");
     q.set("iter", String(iteration));
     window.history.replaceState(null, "", `${window.location.hash.split("?")[0]}?${q}`);

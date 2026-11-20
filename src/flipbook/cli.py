@@ -291,6 +291,11 @@ def _print_findings(findings) -> int:
 _RUN_REF_EPILOG = "run refs: run_id, unique id prefix, 'study/label', or a unique label"
 
 _TINKER_ENV = Path.home() / ".secrets" / "tinker.env"
+_SYNTHETIC_NOTE = "synthetic demo data — numbers and costs are illustrative"
+
+
+def _synthetic(runs: list[dict]) -> bool:
+    return any(r.get("source") == "synthetic" for r in runs)
 
 
 def _load_tinker_env() -> None:
@@ -484,18 +489,26 @@ def _report(store: Store, study: str, as_json: bool = False) -> int:
             "delta": pair.delta if pair.n_pairs else None,
             "delta_ci": list(pair.delta_ci) if pair.n_pairs else None,
             "reward": reward_line, "cost_usd": round(spend, 2), "n_runs": len(runs),
+            "synthetic": _synthetic(runs),
+            "regressions": pair.agreement["a_only"], "gains": pair.agreement["b_only"],
+            "reliability_shifts": len(pair.reliability_shifts),
             "compare": f"flipbook compare {compare_ref}",
             "inspect": f"#/study?name={study}",
         }, indent=2))
         return 0
     print(f"report: {study}")
+    if _synthetic(runs):
+        print(f"  {_SYNTHETIC_NOTE}")
     print(f"  pass@1: {' -> '.join(arc)}")
     if reward_line:
         print(f"  reward: {reward_line}")
     print(f"\n  the read: {verdict}")
     for t in bullets:
         print(f"    {t}")
-    print(f"\n  cost: ~${spend:.2f} across {len(runs)} runs")
+    print(f"\n  cost: ~${spend:.2f} across {len(runs)} runs"
+          + (" (illustrative)" if _synthetic(runs) else ""))
+    print(f"  flips vs baseline: {pair.agreement['a_only']} regressions · "
+          f"{pair.agreement['b_only']} gains · {len(pair.reliability_shifts)} reliability shifts")
     print(f"  compare: flipbook compare {compare_ref}")
     print(f"  inspect: flipbook serve  ->  #/study?name={study}")
     return 0
@@ -520,7 +533,11 @@ workflow
 
 no key? no spend?
   flipbook demo --synthetic seeds a fabricated collapse arc into the
-  store - every command below works on it immediately.
+  store. Inspect it without a key:
+  flipbook report synthetic
+  flipbook compare synthetic/baseline synthetic/step24
+  flipbook show synthetic/step24 synthetic-1
+  flipbook serve
 
 walkthrough
   flipbook freeze --benchmark aime2026:30 --name aime30
@@ -782,8 +799,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.synthetic:
             study = seed_synthetic(store)
             print(f"seeded '{study}': 4 runs on {MANIFEST_NAME} - a fabricated SFT")
-            print("collapse (baseline ~0.92 -> step24 ~0.02 -> final ~0.05) with")
-            print("samples, -1800-nat divergence traces, and a p_skip spike.")
+            runs = {r["label"]: r for r in store.study_runs(study)}
+            arc = " -> ".join(
+                f"{label} {runs[label]['provenance']['pass1']:.2f}"
+                for label in ("baseline", "step24", "final"))
+            traces = store.divergence(runs["baseline"]["run_id"], runs["step24"]["run_id"]).to_pylist()
+            nats = sum(t["sum_nats"] for t in traces) / len(traces)
+            print(f"collapse ({arc}) with")
+            print(f"samples, {nats:.0f}-nat mean divergence at step24, and a p_skip spike.")
             print("\nnumbers are invented - they demo the workflow, not a real model.")
             print("\nnext:")
             print("  flipbook status                                   # coverage gaps")
@@ -927,8 +950,11 @@ def main(argv: list[str] | None = None) -> int:
         runs = store.runs()
         mnames = {d["manifest_hash"]: d["name"] for d in store.manifests()}
         spend = sum(_run_cost(store, r) for r in runs)
+        if _synthetic(runs):
+            print(_SYNTHETIC_NOTE)
         print(f"{len(mnames)} manifests · {len(runs)} eval runs in {store.path}"
-              + (f" · ~${spend:.2f} total" if spend else ""))
+              + (f" · ~${spend:.2f} total" if spend else "")
+              + (" (includes illustrative costs)" if _synthetic(runs) else ""))
         studies: dict[str, list[dict]] = {}
         for r in runs:
             studies.setdefault(r.get("study") or "-", []).append(r)
@@ -949,6 +975,7 @@ def main(argv: list[str] | None = None) -> int:
             sspend = sum(_run_cost(store, r) for r in rs)
             print(f"\n{name} - {len(rs)} runs on {', '.join(sorted(mans))}"
                   + (f" · ~${sspend:.2f}" if sspend else "")
+                  + (" (illustrative)" if _synthetic(rs) else "")
                   + (f"  ({live} still sampling)" if live else ""))
             # a shared label makes 'study/label' refs ambiguous
             label_counts: dict[str, int] = {}
@@ -1146,11 +1173,14 @@ def main(argv: list[str] | None = None) -> int:
             ref = lambda r: f"{r.get('study')}/{r.get('label')}" if r.get("study") and r.get("label") else r["run_id"]
             print(f"{ref(ra)} ({pair.run_a}) acc={pair.acc_a:.3f}  vs  "
                   f"{ref(rb)} ({pair.run_b}) acc={pair.acc_b:.3f}")
+            if _synthetic([ra, rb]):
+                print(_SYNTHETIC_NOTE)
             print(f"delta {pair.delta:+.3f}  CI [{pair.delta_ci[0]:+.3f}, {pair.delta_ci[1]:+.3f}]"
                   f"  on {pair.n_pairs} paired rows ({len(pair.excluded)} excluded)")
             print(f"agreement: both {a['both_right']}/{a['both_wrong']} "
                   f"a_only {a['a_only']} b_only {a['b_only']}")
             print(f"flips: {len(pair.flips)}  "
+                  f"reliability shifts: {len(pair.reliability_shifts)}  "
                   f"truncation {pair.truncation_rate_a:.2f} → {pair.truncation_rate_b:.2f}  "
                   f"cost ${pair.cost_a:.3f} vs ${pair.cost_b:.3f}")
             def fk(d):

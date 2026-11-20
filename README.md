@@ -108,7 +108,7 @@ flipbook serve
 - **pass@n**: probability at least one of n samples is fully correct (unbiased estimator).
 - **score@n**: expected best score over n samples; shown when verdicts are not binary.
 - **delta, CI**: mean per-question score change against the baseline, with a bootstrap 95% confidence interval. If it includes zero, the result is inconclusive.
-- **flips**: questions that went right to wrong (regressions) or wrong to right (gains).
+- **flips**: questions whose majority status (score ≥ 0.5) went right to wrong (regressions) or wrong to right (gains). A score change of at least 0.5 without a status change is a separate **reliability shift**.
 - **failure kinds**: labels such as empty, truncation, parse, wrong_answer, and partial.
 - **divergence**: summed logprob difference on the baseline's sampled traces. Positive means the checkpoint assigns them higher probability; negative means lower.
 - **p_skip**: probability the model ends its turn immediately.

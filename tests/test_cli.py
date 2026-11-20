@@ -2,6 +2,45 @@ import json
 
 from flipbook.cli import _report, main
 from flipbook.store import Store
+from flipbook.synthetic import seed_synthetic
+
+
+def test_synthetic_intro_and_labels(tmp_path, capsys):
+    args = ["--store", str(tmp_path)]
+    assert main(["demo", "--synthetic", *args]) == 0
+    intro = capsys.readouterr().out
+    store = Store(tmp_path)
+    runs = {r["label"]: r for r in store.runs()}
+    assert {r["run_id"] for r in runs.values()} == {
+        "syn_baseline", "syn_step24", "syn_step48", "syn_final"}
+    assert all(r["source"] == "synthetic" for r in runs.values())
+    for label in ("baseline", "step24", "final"):
+        assert f"{label} {runs[label]['provenance']['pass1']:.2f}" in intro
+    traces = store.divergence("syn_baseline", "syn_step24").to_pylist()
+    nats = sum(t["sum_nats"] for t in traces) / len(traces)
+    assert f"{nats:.0f}-nat mean divergence" in intro
+    seed_synthetic(store)
+    assert len(store.runs()) == 4
+    for command in (["status"], ["report", "synthetic"]):
+        assert main([*command, *args]) == 0
+        out = capsys.readouterr().out
+        assert "synthetic demo data — numbers and costs are illustrative" in out
+        assert "(illustrative)" in out
+    assert "9 regressions · 0 gains · 1 reliability shifts" in out
+    assert main(["compare", "synthetic/baseline", "synthetic/final", *args]) == 0
+    out = capsys.readouterr().out
+    assert "a_only 9 b_only 0" in out
+    assert "flips: 9  reliability shifts: 1" in out
+
+
+def test_guide_synthetic_walkthrough(capsys):
+    assert main(["guide"]) == 0
+    out = capsys.readouterr().out.split("no key? no spend?")[1].split("walkthrough")[0]
+    assert "report synthetic" in out
+    assert "compare synthetic/baseline synthetic/step24" in out
+    assert "show synthetic/step24 synthetic-1" in out
+    assert "flipbook serve" in out
+    assert "sft/" not in out
 
 
 def _study(store, base_vs, ckpt_vs):

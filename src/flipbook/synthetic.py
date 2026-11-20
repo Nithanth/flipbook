@@ -90,9 +90,16 @@ def _divergence_row(rng: random.Random, row_id: str, base_id: str, ckpt_id: str,
 
 def seed_synthetic(store: Store, *, seed: int = 0) -> str:
     """Write the synthetic manifest, four-run collapse arc, samples, divergence
-    traces, and a falling-loss series. Returns the study name. Idempotent-ish:
-    reruns overwrite the same run ids (labels clash -> warnings suppressed by
-    deterministic ids)."""
+    traces, and a falling-loss series. Returns the study name. Replaces earlier
+    synthetic demo runs, including those written with legacy ids."""
+    old_ids = {r["run_id"] for r in store.runs(STUDY) if r.get("source") == "synthetic"}
+    for rid in old_ids:
+        for directory, suffix in (("runs", ".json"), ("samples", ".parquet")):
+            (store.path / directory / f"{rid}{suffix}").unlink(missing_ok=True)
+    for directory in ("divergence", "effort"):
+        for path in (store.path / directory).glob("*.parquet"):
+            if old_ids.intersection(path.stem.split("__")):
+                path.unlink()
     rng = random.Random(seed)
     rows = [
         {
@@ -115,7 +122,7 @@ def seed_synthetic(store: Store, *, seed: int = 0) -> str:
 
     run_ids: dict[str, str] = {}
     for label, step, acc in _ARC:
-        rid = f"syn_{label}".ljust(12, "0")
+        rid = f"syn_{label}"
         run_ids[label] = rid
         samples = []
         for r in rows:
@@ -162,7 +169,7 @@ def seed_synthetic(store: Store, *, seed: int = 0) -> str:
             },
         })
 
-    # divergence traces: the -1800-nat cliff at step24, a milder one at final
+    # divergence traces: the cliff at step24, a milder one at final
     for label, ramp, skip_c in (("step24", 4.5, 0.62), ("final", 0.9, 0.04)):
         store.put_divergence(
             run_ids["baseline"], run_ids[label],

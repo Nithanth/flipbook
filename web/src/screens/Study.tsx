@@ -2,8 +2,11 @@ import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { api, type Run, type StudyDetail } from "../api";
 import Tip from "../Tip";
 import Rollouts from "./Rollouts";
+import SyntheticNotice from "../SyntheticNotice";
+import { onRoute } from "../route";
 
 function hashParams(): URLSearchParams {
+  if (!onRoute("study")) return new URLSearchParams();
   return new URLSearchParams(window.location.hash.split("?")[1] ?? "");
 }
 
@@ -11,6 +14,7 @@ function hashParams(): URLSearchParams {
  *  shareable. A dropdown pick pushes history; the auto-picked default only
  *  replaces state so it doesn't cost a history entry. */
 function writeStudyHash(name: string, push: boolean) {
+  if (!onRoute("study")) return;
   const q = hashParams();
   q.delete("iter"); // iteration numbers don't carry across studies
   q.set("name", name);
@@ -36,7 +40,7 @@ export default function Study() {
 
   // default: the study with the most runs - that's the story, not the leftovers
   useEffect(() => {
-    if (study || !studies.length) return;
+    if (!onRoute("study") || study || !studies.length) return;
     const counts = new Map<string, number>();
     for (const r of runs) if (r.study) counts.set(r.study, (counts.get(r.study) ?? 0) + 1);
     const best = [...studies].sort((a, b) => (counts.get(b) ?? 0) - (counts.get(a) ?? 0))[0];
@@ -46,7 +50,9 @@ export default function Study() {
 
   // pushed study picks land here on browser back/forward
   useEffect(() => {
-    const onHash = () => setStudy(hashParams().get("name") ?? "");
+    const onHash = () => {
+      if (onRoute("study")) setStudy(hashParams().get("name") ?? "");
+    };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
@@ -92,6 +98,7 @@ export default function Study() {
   return (
     <>
       <h1>study</h1>
+      <SyntheticNotice runs={detail?.study === study ? detail.runs : []} />
       <p className="page-sub">one training run, every checkpoint: did the eval move, and what moved first?</p>
       <div className="row">
         <label>
