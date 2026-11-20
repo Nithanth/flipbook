@@ -94,6 +94,10 @@ export default function Compare() {
   useEffect(() => {
     const onHash = () => {
       if (!onRoute("compare")) return;
+      if (!hashParams().has("a") && !hashParams().has("b") && a && b) {
+        writePairHash(a, b, false);
+        return;
+      }
       const a2 = hashParams().get("a") ?? "";
       setA(a2);
       setB(hashParams().get("b") ?? "");
@@ -102,7 +106,7 @@ export default function Compare() {
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
-  }, [runs]);
+  }, [runs, a, b]);
 
   const pickManifest = (v: string) => {
     setMh(v);
