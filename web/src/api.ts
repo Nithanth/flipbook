@@ -63,7 +63,7 @@ export interface RolloutTexts {
   rows: RolloutText[];
 }
 
-export interface Manifest {
+interface Manifest {
   manifest_hash: string;
   name: string;
   n_rows: number;
