@@ -295,7 +295,7 @@ function ExpandedRow({
           cut={synthetic ? null : cut}
         />
         <div className="sub">
-          baseline sample {r.sample_idx} · {(r.n ?? r.delta.length).toLocaleString()} tokens ·
+          <a href={`#/compare?${new URLSearchParams({ a: base, b: ckpt, row: r.row_id })}`}>Compare the answers</a> · baseline sample {r.sample_idx} · {(r.n ?? r.delta.length).toLocaleString()} tokens ·
           Σ {r.sum_nats.toFixed(1)} nats · mean {r.mean_nats.toFixed(4)} nats/token
           {r.divergence_pos != null
             ? ` · first divergence at token ${r.divergence_pos.toLocaleString()}`
