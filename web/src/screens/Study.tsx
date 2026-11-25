@@ -97,9 +97,9 @@ export default function Study() {
 
   return (
     <>
-      <h1>study</h1>
+      <header className="compare-heading"><h1>Checkpoint study</h1>
       <SyntheticNotice runs={detail?.study === study ? detail.runs : []} />
-      <p className="page-sub">Compare held-out performance across checkpoints and inspect the answers that changed.</p>
+      </header>
       <div className="row">
         <label>
           study{" "}
@@ -111,7 +111,7 @@ export default function Study() {
         </label>
         {detail && (
           <span className="sub">
-            {detail.runs.length} runs · {nEvals} eval points
+            {detail.runs.length} runs · {nEvals} scored steps
             {detail.has_rollouts ? (
               <>
                 {" · "}
@@ -122,7 +122,7 @@ export default function Study() {
             ) : null}
             {models.length === 1 ? ` · ${models[0]}` : ""}
             {detail.runs.some((r) => r.state === "running") ? " · sampling…" : ""}
-            {touched ? ` · live · updated ${touched.toLocaleTimeString()}` : ""}
+            {touched ? ` · updated ${touched.toLocaleTimeString()}` : ""}
           </span>
         )}
       </div>
@@ -143,13 +143,24 @@ export default function Study() {
         <>
           <Narrative d={derived} runs={detail.runs} />
           <Hero d={derived} go={go} />
-          <MetricStrip d={derived} focus={focus} onFocus={setFocus} go={go} />
+          <details className="compare-details"><summary>Metric breakdown</summary>
+            <MetricStrip d={derived} focus={focus} onFocus={setFocus} go={go} />
+          </details>
         </>
       )}
       {detail?.study === study && detail.has_rollouts && <Rollouts key={study} study={study} />}
       {detail && derived && derived.rows.length > 0 && <StepTable d={derived} runs={detail.runs} />}
     </>
   );
+}
+
+// Differences in scores are percentage points, including their confidence limits.
+function pp(value: number) {
+  return (value > 0 ? "+" : "") + Number((value * 100).toFixed(1));
+}
+
+function costLabel(value: number) {
+  return value > 0 && value < 0.01 ? `${Number((value * 100).toPrecision(2))}¢` : `$${value.toFixed(2)}`;
 }
 
 interface StepRow {
@@ -182,6 +193,7 @@ function tickSteps(x0: number, x1: number): number[] {
 }
 
 interface Derived {
+  k: number;
   rows: StepRow[];
   metricKeys: string[];
   trainKey: { key: string; label: string; kind: "loss" | "reward" } | null;
@@ -214,7 +226,8 @@ function derive(detail: StudyDetail): Derived {
   const passNs = Object.keys(m)
     .map((x) => Number(/\/pass(\d+)$/.exec(x)?.[1]))
     .filter((n) => n > 1);
-  const passK = pick(`/pass${Math.max(0, ...passNs)}`);
+  const k = Math.max(0, ...passNs);
+  const passK = pick(`/pass${k}`);
   const delta = pick("/delta_vs_base");
   const ciLo = pick("/delta_ci_lo");
   const ciHi = pick("/delta_ci_hi");
@@ -307,7 +320,7 @@ function derive(detail: StudyDetail): Derived {
     loss: trainSeries.find((s) => s.step === step)?.value,
     effortGap: gapByStep.get(step),
   }));
-  return { rows, metricKeys: Object.keys(m), trainKey, trainSeries, rlSeries, epochStarts, errorSteps };
+  return { k, rows, metricKeys: Object.keys(m), trainKey, trainSeries, rlSeries, epochStarts, errorSteps };
 }
 
 /** pass@1 vs the train signal: loss on its own right axis for SFT, rollout
@@ -338,8 +351,7 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
   const syLoss = isReward
     ? syPass
     : (y: number) => h - pad - (y / lossMax) * (h - 2 * pad);
-  // signed percentage points, for CI text
-  const pp = (v: number) => `${v >= 0 ? "+" : ""}${(v * 100).toFixed(1)}`;
+
 
   const passPath = pts.map((r, i) => `${i ? "L" : "M"}${sx(r.step)},${syPass(r.pass1!)}`).join(" ");
   const lossPath = d.trainSeries
@@ -367,17 +379,15 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
     setHover(best);
   };
 
-  // modal gap between eval steps, for the legend's "evals run every N steps"
-  const gaps = pts.slice(1).map((r, i) => r.step - pts[i].step);
-  const evalGap = gaps.length
-    ? [...gaps].sort(
-        (x, y) =>
-          gaps.filter((g) => g === y).length - gaps.filter((g) => g === x).length,
-      )[0]
-    : null;
-
   return (
     <div className="hero">
+      <div className="study-chart-heading">
+        <h2>Checkpoint performance</h2>
+        <div className="legend">
+          <span style={{ color: "var(--accent)" }}>━ Held-out pass@1</span>
+          {d.trainKey && <span style={{ color: "var(--accent2)" }}>┅ {d.trainKey.label}{isReward ? "" : " (right axis)"}</span>}
+        </div>
+      </div>
       <svg
         viewBox={`0 0 ${w} ${h}`}
         width="100%"
@@ -432,27 +442,6 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
         {lossPath && (
           <path d={lossPath} fill="none" style={{ stroke: "var(--accent2)" }} strokeWidth={1.4} strokeDasharray="4 3" />
         )}
-        {/* paired-CI whiskers on eval points, under the line so dots stay readable */}
-        {pts
-          .filter((r) => r.delta != null && r.ci)
-          .map((r) => {
-            const lo = Math.max(0, Math.min(1, r.pass1! - (r.delta! - r.ci![0])));
-            const hi = Math.max(0, Math.min(1, r.pass1! + (r.ci![1] - r.delta!)));
-            const x = sx(r.step);
-            return (
-              <g
-                key={`ci${r.step}`}
-                style={{ stroke: "var(--accent)" }}
-                strokeOpacity={0.45}
-                strokeWidth={1.2}
-              >
-                <line x1={x} x2={x} y1={syPass(lo)} y2={syPass(hi)} />
-                <line x1={x - 3} x2={x + 3} y1={syPass(lo)} y2={syPass(lo)} />
-                <line x1={x - 3} x2={x + 3} y1={syPass(hi)} y2={syPass(hi)} />
-                <title>{`step ${r.step}: 95% paired CI on delta vs base [${pp(r.ci![0])}, ${pp(r.ci![1])}] pp`}</title>
-              </g>
-            );
-          })}
         <path d={passPath} fill="none" style={{ stroke: "var(--accent)" }} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
         {pts.map((r) => (
           <circle
@@ -502,8 +491,10 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
               lines={[
                 [`step ${hover} · epoch ${epochAt(hover)}`, "var(--text)", true],
                 ...(hovRow
-                  ? ([[`pass@1 ${(hovRow.pass1! * 100).toFixed(1)}%${hovRow.delta != null && hovRow.ci ? `  CI [${pp(hovRow.ci[0])}, ${pp(hovRow.ci[1])}] pp` : ""}`, "var(--accent)", false]] as [string, string, boolean][])
+                  ? ([[`pass@1 ${(hovRow.pass1! * 100).toFixed(1)}%`, "var(--accent)", false]] as [string, string, boolean][])
                   : []),
+                ...(hovRow?.delta != null ? [[`vs baseline: ${pp(hovRow.delta)} pp`, "var(--text)", false] as [string, string, boolean]] : []),
+                ...(hovRow?.delta != null && hovRow.ci ? [[`95% CI: ${pp(hovRow.ci[0])} to ${pp(hovRow.ci[1])} pp`, "var(--muted)", false] as [string, string, boolean]] : []),
                 ...(hovLoss != null
                   ? ([[`${isReward ? "reward" : "nll"}  ${isReward ? hovLoss.toFixed(2) : hovLoss.toPrecision(3)}`, "var(--accent2)", false]] as [string, string, boolean][])
                   : []),
@@ -523,31 +514,7 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
           optimizer step →
         </text>
       </svg>
-      <div className="legend">
-        <Tip text="Fraction of frozen eval questions answered correctly at this checkpoint (left axis). Click a point to compare that step against baseline.">
-          <span style={{ color: "var(--accent)" }}>━ pass@1 (click a point)</span>
-        </Tip>
-        {pts.some((r) => r.delta != null && r.ci) && (
-          <Tip text="Bootstrap 95% CI of the paired per-question delta vs baseline, drawn around each point. If the whisker crosses the baseline's level, the change is within noise.">
-            <span style={{ color: "var(--accent)" }}>┃ 95% CI</span>
-          </Tip>
-        )}
-        {d.trainKey && (
-          <Tip text={
-            isReward
-              ? `${d.trainKey.key}: mean rollout reward on the training env, same 0-1 axis as pass@1 - what the optimizer sees vs what you care about. It can saturate while held-out eval never moves`
-              : `${d.trainKey.key}: training loss on the fine-tuning batches - what the optimizer sees (right axis). It can keep falling while eval behavior collapses; that's the collision this chart exists to show. Logged every optimizer step (one batch); evals run every ${evalGap ?? "?"} steps.`
-          }>
-            <span style={{ color: "var(--accent2)" }}>┅ {d.trainKey.label}</span>
-          </Tip>
-        )}
-      </div>
-      <p className="sub" style={{ marginTop: 4 }}>
-        x = optimizer step (one training batch).
-        {d.trainSeries.length ? ` ${d.trainKey?.label} is logged every step; ` : " "}
-        each pass@1 dot is a full eval sweep
-        {evalGap ? `, run every ${evalGap} steps` : ""}.
-      </p>
+
     </div>
   );
 }
@@ -764,13 +731,15 @@ function Narrative({ d, runs }: { d: Derived; runs: Run[] }) {
       href: cmp(tr.step),
     });
 
+  const assessed = collapsed ? trough : last;
   return (
-    <div className="card read">
-      <div className="mini-label">Regression assessment</div>
+    <div className="study-assessment">
       <p className="verdict">{verdict}</p>
+      <p className="sub">Step {assessed.step} · {pct(assessed.pass1!)} pass@1{assessed.delta != null && ` · ${pp(assessed.delta)} pp vs baseline`}</p>
       {cmp(collapsed ? trough.step : last.step) && <a href={`${cmp(collapsed ? trough.step : last.step)}&investigate=1`}>
         Investigate {collapsed ? "this regression" : "this checkpoint"} · step {collapsed ? trough.step : last.step}
       </a>}
+      <details><summary>Supporting observations</summary>
       {[...rlBullets, ...bullets].slice(0, 5).map((b) =>
         b.href ? (
           <p key={b.t}>
@@ -780,6 +749,7 @@ function Narrative({ d, runs }: { d: Derived; runs: Run[] }) {
           <p key={b.t}>{b.t}</p>
         ),
       )}
+      </details>
     </div>
   );
 }
@@ -796,13 +766,13 @@ function MetricStrip({
   go: (step: number) => void;
 }) {
   const evalCards: [string, string, (r: StepRow) => number | undefined, (v: number) => string][] = [
-    ["pass@k", "fraction of questions where at least one of the k samples was correct - the headroom above pass@1", (r) => r.passK, (v) => `${(v * 100).toFixed(1)}%`],
+    [`pass@${d.k}`, "fraction of questions where at least one of the k samples was correct - the headroom above pass@1", (r) => r.passK, (v) => `${(v * 100).toFixed(1)}%`],
     ["divergence (nats)", "How far the checkpoint's token probabilities moved from base on the baseline's own reasoning traces. Positive = the checkpoint assigns the baseline's traces higher probability than the baseline did (sharpened onto its own distribution); negative = it moved away from them. ~0 = unchanged policy; very negative = the internals shifted hard - often before accuracy shows it.", (r) => r.div, (v) => v.toLocaleString("en-US", { maximumFractionDigits: 0 })],
-    ["mean gen tokens", "Average response length. A sudden drop or spike means the model changed how it answers (rambling into the cap, or collapsing to short format-locked answers).", (r) => r.genTok, (v) => v.toLocaleString("en-US", { maximumFractionDigits: 0 })],
+    ["Answer length", "Average response length. A sudden drop or spike means the model changed how it answers (rambling into the cap, or collapsing to short format-locked answers).", (r) => r.genTok, (v) => v.toLocaleString("en-US", { maximumFractionDigits: 0 })],
     ["truncation", "Fraction of samples that hit the max-token cap before finishing. High truncation = the model rambles and never emits a final answer.", (r) => r.trunc, (v) => `${(v * 100).toFixed(0)}%`],
     ["effort gap (nats)", "Log-prob difference between effort=0.9 and effort=0.2 prompts on the same trace. Large = effort conditioning still modulates the model; ~0 = the dial is dead.", (r) => r.effortGap, (v) => v.toLocaleString("en-US", { maximumFractionDigits: 0 })],
-    ["skip prob", "The model's own probability of ending the response immediately (end-of-message as the first token). Rising = it increasingly wants to emit nothing.", (r) => r.pSkip, (v) => `${(v * 100).toFixed(1)}%`],
-    ["eval cost", "Sampling cost of this eval point, in USD.", (r) => r.cost, (v) => `$${v.toFixed(2)}`],
+    ["Predicted empty response", "The model's own probability of ending the response immediately (end-of-message as the first token). Rising = it increasingly wants to emit nothing.", (r) => r.pSkip, (v) => `${(v * 100).toFixed(1)}%`],
+    ["eval cost", "Sampling cost of this eval point, in USD.", (r) => r.cost, costLabel],
   ];
   const evalGroup = evalCards
     .map(([label, tip, get, fmt]) => ({
@@ -1047,14 +1017,15 @@ function StepTable({ d, runs }: { d: Derived; runs: Run[] }) {
   if (!evalRows.length) return null;
   return (
     <>
-      <h2>per-step evals</h2>
+      <h2>Checkpoint results</h2>
+      <div className="study-results">
       <table>
         <thead>
           <tr>
             <th>step</th>
             <th><Tip text="Accuracy on the frozen eval manifest at this checkpoint.">pass@1</Tip></th>
-            <th><Tip text="fraction of questions where at least one of the k samples was correct - the headroom above pass@1">p@k</Tip></th>
-            <th><Tip text="Paired per-question accuracy change vs baseline, with a bootstrap 95% CI over questions. Deltas inside the noise band (~±0.07 at n=30, k=2) are inconclusive.">Δ vs base</Tip></th>
+            <th><Tip text="fraction of questions where at least one of the k samples was correct - the headroom above pass@1">{d.k ? `pass@${d.k}` : "pass@k"}</Tip></th>
+            <th><Tip text="Score change in percentage points. The range below each change is its paired 95% confidence interval.">Change vs baseline</Tip></th>
             <th><Tip text="Questions that changed correctness vs baseline. R = right→wrong regressions, G = wrong→right gains. Noise flips are roughly symmetric; flips leaning one way are a stronger sign than an even split.">flips</Tip></th>
             <th><Tip text="Fraction of samples truncated at the max-token cap.">trunc</Tip></th>
             <th><Tip text="Average response length in tokens.">gen tok</Tip></th>
@@ -1081,7 +1052,7 @@ function StepTable({ d, runs }: { d: Derived; runs: Run[] }) {
                 {/* colour only when the CI excludes zero; a delta inside the noise band is not a verdict */}
                 <td className={r.ci && r.ci[1] < 0 ? "neg" : r.ci && r.ci[0] > 0 ? "pos" : undefined}>
                   {r.delta != null
-                    ? `${r.delta >= 0 ? "+" : ""}${r.delta.toFixed(2)} [${r.ci?.[0].toFixed(2)}, ${r.ci?.[1].toFixed(2)}]`
+                    ? <>{pp(r.delta)} pp{r.ci && <small className="study-range">95% CI: {pp(r.ci[0])} to {pp(r.ci[1])} pp</small>}</>
                     : "-"}
                 </td>
                 <td>
@@ -1093,7 +1064,7 @@ function StepTable({ d, runs }: { d: Derived; runs: Run[] }) {
                   {r.div != null ? r.div.toFixed(0) : "-"}
                 </td>
                 <td>{r.effortGap != null ? r.effortGap.toFixed(0) : "-"}</td>
-                <td>{r.cost != null ? `$${r.cost.toFixed(2)}` : "-"}</td>
+                <td>{r.cost != null ? costLabel(r.cost) : "-"}</td>
               </tr>
             );
           })}
@@ -1109,7 +1080,8 @@ function StepTable({ d, runs }: { d: Derived; runs: Run[] }) {
             ))}
         </tbody>
       </table>
-      <p className="sub" style={{ marginTop: 6 }}>- = not computed for this step (divergence and effort run on demand).</p>
+      </div>
+      <details className="study-method"><summary>How to read the change</summary><p>Change is the checkpoint score minus the baseline score, in percentage points (pp). The 95% confidence interval comes from bootstrapping paired questions. An interval that includes zero is inconclusive. A dash means the metric was not measured.</p></details>
     </>
   );
 }
