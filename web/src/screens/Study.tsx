@@ -768,6 +768,9 @@ function Narrative({ d, runs }: { d: Derived; runs: Run[] }) {
     <div className="card read">
       <div className="mini-label">Regression assessment</div>
       <p className="verdict">{verdict}</p>
+      {cmp(collapsed ? trough.step : last.step) && <a href={`${cmp(collapsed ? trough.step : last.step)}&investigate=1`}>
+        Investigate {collapsed ? "this regression" : "this checkpoint"} · step {collapsed ? trough.step : last.step}
+      </a>}
       {[...rlBullets, ...bullets].slice(0, 5).map((b) =>
         b.href ? (
           <p key={b.t}>
@@ -1070,7 +1073,8 @@ function StepTable({ d, runs }: { d: Derived; runs: Run[] }) {
             return (
               <tr key={r.step}>
                 <td>
-                  {link ? <a href={link}>step {r.step}</a> : `step ${r.step}`}
+                  {link ? <><a href={link}>step {r.step}</a><br />
+                    <a className="sub" href={`${link}&investigate=1`}>Investigate</a></> : `step ${r.step}`}
                 </td>
                 <td>{r.pass1 != null ? `${(r.pass1 * 100).toFixed(1)}%` : "-"}</td>
                 <td>{r.passK != null ? `${(r.passK * 100).toFixed(1)}%` : "-"}</td>

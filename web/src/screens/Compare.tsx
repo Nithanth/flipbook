@@ -1,3 +1,4 @@
+import Investigation from "../Investigation";
 import { useEffect, useState } from "react";
 import { api, type TokenTrace, type PairReport, type RowDetail, type RowSample, type Run } from "../api";
 import Tip from "../Tip";
@@ -22,6 +23,7 @@ function writePairHash(a: string, b: string, push: boolean) {
   else q.delete("a");
   if (b) q.set("b", b);
   else q.delete("b");
+  q.delete("investigate");
   q.delete("row"); // a row deep link only names a row of the old pair
   const s = `${q}`;
   const url = `#/compare${s ? `?${s}` : ""}`;
@@ -132,7 +134,9 @@ export default function Compare() {
     setPair(null);
     setErr(null);
     if (!a || !b || a === b) return;
-    api.compare(a, b).then(setPair).catch((e) => setErr(String(e)));
+    let active = true;
+    api.compare(a, b).then(p => { if (active) setPair(p); }).catch(e => { if (active) setErr(String(e)); });
+    return () => { active = false; };
   }, [a, b]);
 
   return (
@@ -176,7 +180,7 @@ export default function Compare() {
       {a && b && a === b && (
         <p className="sub">same run on both sides - pick two different runs to compare</p>
       )}
-      {pair && <Report pair={pair} runs={runs} />}
+      {pair && pair.run_a === a && pair.run_b === b && <Report key={JSON.stringify([a, b])} pair={pair} runs={runs} />}
     </>
   );
 }
@@ -254,6 +258,7 @@ function RunPicker({
 }
 
 function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
+  const [investigate, setInvestigate] = useState(hashParams().has("investigate"));
   const ag = pair.agreement;
   const labelA = runLabel(runs.find((r) => r.run_id === pair.run_a), pair.run_a);
   const labelB = runLabel(runs.find((r) => r.run_id === pair.run_b), pair.run_b);
@@ -280,6 +285,10 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
   const filterable = !!Object.keys(pair.failure_rows_b ?? {}).length;
   return (
     <>
+      {investigate ? <Investigation pair={pair} inspect={row => {
+        setOpen(row);
+        requestAnimationFrame(() => document.getElementById("rowpanel")?.scrollIntoView({ block: "start" }));
+      }} /> : <button className="hotchip" onClick={() => setInvestigate(true)}>Investigate this regression</button>}
       <div className="cards">
         <div className="card">
           <div className="big">
@@ -530,7 +539,7 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
 
       {open && (
         <div className="rowpanel" id="rowpanel">
-          <RowPanel pair={pair} row={open} labelA={labelA} labelB={labelB} />
+          <RowPanel key={open} pair={pair} row={open} labelA={labelA} labelB={labelB} />
         </div>
       )}
 
