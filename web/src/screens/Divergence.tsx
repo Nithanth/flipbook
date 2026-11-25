@@ -163,11 +163,14 @@ export default function Divergence() {
                     {r.p_skip_base.toFixed(3)} → {r.p_skip_ckpt.toFixed(3)}
                   </td>
                   <td>
-                    <button type="button" aria-expanded={isOpen} onClick={e => {
-                      e.stopPropagation();
-                      setOpen(isOpen ? null : key);
-                    }}>{isOpen ? "Hide trace" : "Show trace"}</button>
-                    <Spark delta={r.delta} mark={r.divergence_pos} n={r.n ?? undefined} scale={sparkScale} />
+                    <button
+                      type="button"
+                      className="trace-toggle"
+                      aria-label={`Token trace for ${r.row_id}, sample ${r.sample_idx}`}
+                      aria-expanded={isOpen}
+                    >
+                      <Spark delta={r.delta} mark={r.divergence_pos} n={r.n ?? undefined} scale={sparkScale} />
+                    </button>
                   </td>
                 </tr>,
                 isOpen && (
