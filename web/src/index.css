@@ -481,3 +481,13 @@ h2 a.sub:hover { color: var(--accent); }
 .rollout-group .rollout-transcript { border-top: none; padding: 8px 0 8px 14px; }
 .rollout-fields span.vf { color: var(--pos); border-color: var(--pos); }
 .rollout-fields span.vt { color: var(--neg); border-color: var(--neg); }
+
+nav .connect-link { color: var(--accent); border: 1px solid var(--border); }
+.connect { max-width: 760px; }
+.connect-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 16px; }
+.connect-fields label { display: grid; gap: 6px; }
+.connect input, .connect button { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); padding: 8px 12px; border-radius: 6px; }
+.connect button { cursor: pointer; }
+.connect button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.connect pre { padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 680px) { nav { flex-wrap: wrap; } }
