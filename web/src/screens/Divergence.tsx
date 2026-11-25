@@ -173,6 +173,7 @@ export default function Divergence() {
                 isOpen && (
                   <ExpandedRow
                     key={`${key}-x`}
+                    synthetic={runs.some(run => run.run_id === sel.split("__")[0] && run.source === "synthetic")}
                     colSpan={collapseDiv ? 4 : 5}
                     base={sel.split("__")[0]}
                     ckpt={sel.split("__")[1]}
@@ -264,11 +265,13 @@ function PairRead({
 /** Expanded row: the trace + the branch probe, sharing a "cut" position that
  *  clicks on a token set. */
 function ExpandedRow({
+  synthetic,
   colSpan,
   base,
   ckpt,
   r,
 }: {
+  synthetic: boolean;
   colSpan: number;
   base: string;
   ckpt: string;
@@ -285,8 +288,8 @@ function ExpandedRow({
           sample={r.sample_idx}
           delta={r.delta}
           mark={r.divergence_pos}
-          onPick={setCut}
-          cut={cut}
+          onPick={synthetic ? undefined : setCut}
+          cut={synthetic ? null : cut}
         />
         <div className="sub">
           baseline sample {r.sample_idx} · {(r.n ?? r.delta.length).toLocaleString()} tokens ·
@@ -295,14 +298,14 @@ function ExpandedRow({
             ? ` · first divergence at token ${r.divergence_pos.toLocaleString()}`
             : ""}
         </div>
-        <BranchView
+        {!synthetic && <BranchView
           base={base}
           ckpt={ckpt}
           row={r.row_id}
           sample={r.sample_idx}
           pos={cut}
           nTokens={r.n ?? r.delta.length}
-        />
+        />}
       </td>
     </tr>
   );

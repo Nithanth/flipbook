@@ -425,3 +425,23 @@ def test_root_without_gui_build_points_to_build_steps(tmp_path, monkeypatch):
     r = c.get("/")
     assert r.status_code == 200 and "npm run build" in r.text
     assert c.get("/api/studies").status_code == 200
+
+
+def test_demo_trace_matches_baseline_response(tmp_path):
+    from flipbook.synthetic import seed_synthetic
+
+    store = Store(tmp_path)
+    seed_synthetic(store)
+    client = _client(tmp_path)
+    samples = {(r["row_id"], r["sample_idx"]): r
+               for r in store.samples("syn_baseline").to_pylist()}
+    for checkpoint in ("syn_step24", "syn_final"):
+        for row in store.divergence("syn_baseline", checkpoint).to_pylist():
+            sample = samples[row["row_id"], row["sample_idx"]]
+            trace = client.get("/api/divergence/trace", params={
+                "base": "syn_baseline", "ckpt": checkpoint,
+                "row": row["row_id"], "sample": row["sample_idx"],
+            }).json()["tokens"]
+            assert "".join(t["t"] for t in trace) == sample["text"]
+            assert [t["d"] for t in trace] == row["delta"]
+            assert len(trace) == row["n"] == sample["gen_tokens"]
