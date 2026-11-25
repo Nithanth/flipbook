@@ -129,8 +129,10 @@ export default function Study() {
       {err && <p className="err">{err}</p>}
       {detail && derived && derived.rows.length === 0 && (
         <div className="card read">
-          <div className="mini-label">{detail.has_rollouts ? "no checkpoint eval series" : "no training metrics"}</div>
-          {detail.has_rollouts ? <p>Imported rollouts are shown below. Add checkpoint evals to compare held-out performance.</p> : <p>
+          <div className="mini-label">{detail.has_rollouts ? "no checkpoint eval series" : derived.metricKeys.length ? "no charted metrics" : "no training metrics"}</div>
+          {detail.has_rollouts ? <p>Imported rollouts are shown below. Add checkpoint evals to compare held-out performance.</p> : derived.metricKeys.length ? (
+            <p>Recorded metrics: {derived.metricKeys.join(", ")}</p>
+          ) : <p>
             this study has {detail.runs.length} eval run{detail.runs.length === 1 ? "" : "s"} but no
             tracked training loop - there's no step axis to chart. pair runs up in{" "}
             <a href="#/compare">compare</a> or browse them under <a href="#/evals">evals</a>.
@@ -225,7 +227,7 @@ function derive(detail: StudyDetail): Derived {
   const cost = pick("/cost_usd");
   // next-token nll for SFT runs; bpb is the same quantity in bits.
   // RL logs rollout reward instead - same right-axis role
-  const lossKey = ["train_mean_nll", "train_mean_bpb"].find((k) => m[k]?.length) ?? null;
+  const lossKey = ["train_mean_nll", "train/nll", "train_mean_bpb"].find((k) => m[k]?.length) ?? null;
   const rewardKey =
     (m["env/all/reward/total"]?.length ? "env/all/reward/total" : null) ??
     Object.keys(m).find((k) => k.endsWith("/reward/total") && m[k].length) ??
