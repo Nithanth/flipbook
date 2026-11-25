@@ -143,9 +143,7 @@ export default function Study() {
         <>
           <Narrative d={derived} runs={detail.runs} />
           <Hero d={derived} go={go} />
-          <details className="compare-details"><summary>Metric breakdown</summary>
-            <MetricStrip d={derived} focus={focus} onFocus={setFocus} go={go} />
-          </details>
+          <MetricStrip d={derived} focus={focus} onFocus={setFocus} go={go} />
         </>
       )}
       {detail?.study === study && detail.has_rollouts && <Rollouts key={study} study={study} />}
@@ -334,7 +332,7 @@ function Hero({ d, go }: { d: Derived; go: (step: number) => void }) {
   if (!pts.length) return <p className="sub">no eval metrics for this study</p>;
 
   const w = 860;
-  const h = 280;
+  const h = 218;
   const pad = 44;
   const allSteps = [
     ...pts.map((r) => r.step),
@@ -784,26 +782,28 @@ function MetricStrip({
     .filter((c) => c.pts.length >= 2);
   const rlGroup = d.rlSeries.filter((c) => c.pts.length >= 2);
   const sel = [...evalGroup, ...rlGroup].find((c) => c.label === focus);
+  const steps = [...d.rows.map(r => r.step), ...rlGroup.flatMap(c => c.pts.map(p => p.x))];
+  const domain: [number, number] = [Math.min(...steps), Math.max(...steps)];
   const card = (c: (typeof evalGroup)[number]) => (
-    <div
+    <button type="button" aria-pressed={focus === c.label} title={c.tip}
       className={focus === c.label ? "mini sel" : "mini"}
       key={c.label}
       onClick={() => onFocus(focus === c.label ? null : c.label)}
     >
-      <div className="mini-label"><Tip text={c.tip}>{c.label}</Tip></div>
-      <TinySeries pts={c.pts} />
-      <div className="mini-val">{c.fmt(c.pts[c.pts.length - 1].y)}</div>
-    </div>
+      <span className="mini-label">{c.label}</span>
+      <span className="mini-val">{c.fmt(c.pts[c.pts.length - 1].y)}</span>
+      <TinySeries pts={c.pts} domain={domain} />
+    </button>
   );
   return (
     <>
-      <div className="strip-group">
-        <div className="mini-label">held-out eval</div>
+      {evalGroup.length > 0 && <div className="strip-group">
+        <h2>Evaluation metrics</h2>
         <div className="strip">{evalGroup.map(card)}</div>
-      </div>
+      </div>}
       {rlGroup.length > 0 && (
         <div className="strip-group">
-          <div className="mini-label">training</div>
+          <h2>Training metrics</h2>
           <div className="strip">{rlGroup.map(card)}</div>
         </div>
       )}
@@ -814,7 +814,7 @@ function MetricStrip({
           pts={sel.pts}
           ghost={d.rows.filter((r) => r.pass1 != null).map((r) => ({ x: r.step, y: r.pass1! }))}
           ghostLabel="pass@1"
-          xDomain={[Math.min(...d.rows.map((r) => r.step)), Math.max(...d.rows.map((r) => r.step))]}
+          xDomain={domain}
           epochStarts={d.epochStarts}
           fmt={sel.fmt}
           go={go}
@@ -985,17 +985,17 @@ function FocusChart({
   );
 }
 
-function TinySeries({ pts }: { pts: { x: number; y: number }[] }) {
+function TinySeries({ pts, domain }: { pts: { x: number; y: number }[]; domain: [number, number] }) {
   const w = 150;
   const h = 40;
   if (pts.length < 2) return <svg width={w} height={h} />;
-  const [x0, x1] = [Math.min(...pts.map((p) => p.x)), Math.max(...pts.map((p) => p.x))];
+  const [x0, x1] = domain;
   const [y0, y1] = [Math.min(...pts.map((p) => p.y)), Math.max(...pts.map((p) => p.y))];
   const sx = (x: number) => 2 + ((x - x0) / Math.max(1, x1 - x0)) * (w - 4);
   const sy = (y: number) => h - 2 - ((y - y0) / Math.max(1e-9, y1 - y0)) * (h - 4);
   const path = pts.map((p, i) => `${i ? "L" : "M"}${sx(p.x)},${sy(p.y)}`).join(" ");
   return (
-    <svg width={w} height={h}>
+    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
       <path d={path} fill="none" style={{ stroke: "var(--muted)" }} strokeWidth={1.4} />
       {pts.map((p) => (
         <circle key={p.x} cx={sx(p.x)} cy={sy(p.y)} r={2} style={{ fill: "var(--muted)" }} />

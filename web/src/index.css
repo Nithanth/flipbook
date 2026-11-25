@@ -106,7 +106,6 @@ select:hover { border-color: var(--muted); }
   padding: 14px 16px;
 }
 :root[data-theme="light"] .card,
-:root[data-theme="light"] .mini,
 :root[data-theme="light"] .chart {
   box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
 }
@@ -194,24 +193,34 @@ tr.gain td { color: var(--pos); }
 .hero { margin: 16px 0 8px; }
 .legend { display: flex; gap: 18px; font-size: 12px; color: var(--muted); margin-top: 8px; }
 
-.strip-group { margin: 18px 0 8px; }
-.strip-group > .mini-label { margin-bottom: 6px; }
-.strip-group .strip { margin: 0; }
+.strip-group { margin: 22px 0; }
+.strip-group h2 { margin: 0 0 10px; font-size: 15px; color: var(--text); }
 .strip {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 12px;
-  margin: 18px 0 8px;
+  grid-template-columns: repeat(auto-fit, minmax(min(145px, 100%), 1fr));
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
 }
 .mini {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  font: inherit;
+  color: var(--text);
+  text-align: left;
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px 12px;
+  border: 0;
+  padding: 10px 14px;
   cursor: pointer;
 }
-.mini:hover { border-color: var(--muted); }
-.mini.sel { border-color: var(--accent); }
+.mini .mini-label { font-size: 12px; margin: 0; }
+.mini .mini-val { font-size: 17px; font-weight: 600; margin: 0 0 3px; }
+.mini:hover, .mini.sel { background: var(--surface-2); }
+.mini.sel { box-shadow: inset 0 -2px var(--accent); }
+.mini:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .mini-label { color: var(--muted); font-size: 11px; margin-bottom: 4px; }
 .mini-val { font-size: 13px; margin-top: 2px; font-variant-numeric: tabular-nums; }
 
