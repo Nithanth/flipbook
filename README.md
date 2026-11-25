@@ -1,8 +1,9 @@
 # flipbook
 
-Regression analysis for [Tinker](https://thinkingmachines.ai/tinker/) fine-tuning runs.
+Regression analysis for [Tinker](https://thinkingmachines.ai/tinker/) SFT and RL checkpoints.
 Evaluate checkpoints on the same questions, compare scores and costs, and
-inspect the examples that improved or regressed.
+inspect the examples that improved or regressed. Use **Evaluate checkpoints** in the GUI
+to generate evaluation commands for saved weights or attach an evaluator to an existing cookbook loop.
 
 ## Try it without a key
 

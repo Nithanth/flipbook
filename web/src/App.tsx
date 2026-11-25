@@ -77,7 +77,7 @@ export default function App() {
           </a>
         ))}
         <span className="spacer" />
-        <a href="#/connect" className="connect-link">Connect a Tinker run</a>
+        <a href="#/connect" className="connect-link">Evaluate checkpoints</a>
         <button
           className="theme-btn"
           onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
