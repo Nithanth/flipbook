@@ -34,70 +34,40 @@ export function Trace({
   cut?: number | null;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
-  const max = Math.max(1e-9, ...tokens.map((t) => Math.abs(t.d)));
-  // long traces wash out to uniform red - a windowed-mean strip above the text
-  // keeps regional structure legible; clicking a bin scrolls the text to it
-  const binN = Math.max(1, Math.ceil(tokens.length / 160));
-  const bins: { start: number; mean: number; sum: number }[] = [];
-  for (let i = 0; i < tokens.length; i += binN) {
-    const seg = tokens.slice(i, i + binN);
-    const sum = seg.reduce((a, t) => a + t.d, 0);
-    bins.push({ start: i, mean: sum / seg.length, sum });
+  const [windowStart, setWindowStart] = useState<number | null>(null);
+  const max = tokens.reduce((m, t) => Math.max(m, Math.abs(t.d)), 1e-9);
+  const longTrace = tokens.length > 160;
+  const binN = Math.max(8, Math.ceil(tokens.length / 160));
+  const windows = [];
+  if (longTrace) {
+    for (let start = 0; start < tokens.length; start += binN) {
+      const segment = tokens.slice(start, start + binN);
+      const sum = segment.reduce((total, token) => total + token.d, 0);
+      windows.push({ start, sum, mean: sum / segment.length });
+    }
   }
-  const binMax = Math.max(1e-9, ...bins.map((b) => Math.abs(b.mean)));
-  // hottest windows = jump targets so nobody scans 32k tokens by eye;
-  // de-dupe picks within 2 bins of each other, ignore trivial mass
-  const hot: typeof bins = [];
-  for (const b of [...bins].sort((x, y) => Math.abs(y.sum) - Math.abs(x.sum))) {
-    if (Math.abs(b.sum) < 5) break;
-    if (hot.some((h) => Math.abs(h.start - b.start) < binN * 2)) continue;
-    hot.push(b);
+  const hot: typeof windows = [];
+  for (const w of windows.sort((a, b) => Math.abs(b.sum) - Math.abs(a.sum))) {
+    if (Math.abs(w.sum) < 5) break;
+    if (hot.every(other => Math.abs(other.start - w.start) >= binN * 2)) hot.push(w);
     if (hot.length === 3) break;
   }
-  hot.sort((a, b) => a.start - b.start);
-  const kfmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
-  const jump = (start: number) => {
+  function jump(start: number) {
+    setWindowStart(start);
     const el = wrapRef.current?.querySelector(`[data-tok="${start}"]`);
     if (el instanceof HTMLElement && wrapRef.current) {
       wrapRef.current.scrollTop = el.offsetTop - wrapRef.current.clientHeight / 2;
     }
-  };
+  }
   return (
     <>
       <div className="sub" style={{ marginBottom: 6 }}>
         {reason && <p>{reason} Numbers below are token positions.</p>}
-        Baseline trace colored by Δlogprob per token ·{" "}
-        <span style={{ color: "var(--neg)" }}>red</span> = ckpt less confident,{" "}
-        <span style={{ color: "var(--accent)" }}>blue</span> = more confident
-        {mark != null ? " · amber edge = first divergence" : ""}
-        {" · strip = mean Δ per window, click to jump"}
-        {onPick ? " · click any token to set the branch cut" : ""}
+        Baseline response · <span style={{ color: "var(--neg)" }}>Red: less likely</span>
+        {" · "}<span style={{ color: "var(--accent)" }}>Blue: more likely</span> under the checkpoint
+        {mark != null && ` · First divergence: token ${mark} (underlined)`}
+        {onPick && " · Click a token to set the branch cut"}
       </div>
-      <div className="binstrip">
-        {bins.map((b, i) => (
-          <div
-            key={i}
-            className={`bin${mark != null && mark >= b.start && mark < b.start + binN ? " binmark" : ""}`}
-            title={`tokens ${b.start}-${Math.min(b.start + binN, tokens.length)}: mean Δ ${b.mean.toFixed(3)} nats`}
-            onClick={() => jump(b.start)}
-            style={{
-              background: `color-mix(in srgb, ${
-                b.mean < 0 ? "var(--neg)" : "var(--accent)"
-              } ${(Math.sqrt(Math.abs(b.mean) / binMax) * 85).toFixed(0)}%, transparent)`,
-            }}
-          />
-        ))}
-      </div>
-      {hot.length > 0 && (
-        <div className="sub hotchips">
-          hottest windows:
-          {hot.map((b) => (
-            <button key={b.start} className="hotchip" onClick={() => jump(b.start)}>
-              {kfmt(b.start)}–{kfmt(b.start + binN)} · Σ {b.sum.toFixed(0)}
-            </button>
-          ))}
-        </div>
-      )}
       <div ref={wrapRef} className="traceread">
         {tokens.map((t, i) => {
           const a = Math.sqrt(Math.abs(t.d) / max);
@@ -106,7 +76,7 @@ export function Trace({
               key={i}
               data-tok={i % binN === 0 ? i : undefined}
               className={
-                `${i === mark ? "divmark" : ""}${i === cut ? " cutmark" : ""}${
+                `${i === mark ? "divmark" : ""}${onPick && i === cut ? " cutmark" : ""}${windowStart != null && i >= windowStart && i < windowStart + binN ? " jumpmark" : ""}${
                   CTL.test(t.t) ? " ctl" : ""
                 }${onPick ? " pickable" : ""}` || undefined
               }
@@ -115,7 +85,7 @@ export function Trace({
                   t.d < 0 ? "var(--neg)" : "var(--accent)"
                 } ${(a * 80).toFixed(0)}%, transparent)`,
               }}
-              title={`token ${i}: Δ ${t.d.toFixed(3)} nats${onPick ? " - click to cut here" : ""}`}
+              title={`token ${i}${i === mark ? " · first divergence" : ""}: Δ ${t.d.toFixed(3)} nats${onPick ? " - click to cut here" : ""}`}
               onClick={onPick ? () => onPick(i) : undefined}
             >
               {t.t}
@@ -123,6 +93,20 @@ export function Trace({
           );
         })}
       </div>
+      {hot.length > 0 && (
+        <div className="sub hotchips">
+          Largest shifts
+          {hot.map(w => {
+            const excerpt = tokens.slice(w.start, w.start + binN).map(t => t.t).join("").trim();
+            return <button key={w.start} className="hotchip"
+              aria-pressed={windowStart === w.start}
+              title={`Tokens ${w.start}–${Math.min(w.start + binN, tokens.length) - 1} · total ${w.sum.toFixed(2)} nats · mean ${w.mean.toFixed(2)} nats/token`}
+              onClick={() => jump(w.start)}>
+              {w.mean < 0 ? "Less likely" : "More likely"} · {excerpt.length > 48 ? excerpt.slice(0, 48) + "…" : excerpt}
+            </button>;
+          })}
+        </div>
+      )}
     </>
   );
 }
