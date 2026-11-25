@@ -2,6 +2,19 @@ from flipbook.store import Store
 from flipbook.synthetic import seed_synthetic
 
 
+def test_synthetic_checkpoint_paths(tmp_path):
+    store = Store(tmp_path)
+    seed_synthetic(store)
+
+    runs = {run["label"]: run["checkpoint_path"] for run in store.runs("synthetic")}
+    assert runs == {
+        "baseline": None,
+        "step24": "tinker://synthetic/sampler_weights/000024",
+        "step48": "tinker://synthetic/sampler_weights/000048",
+        "final": "tinker://synthetic/sampler_weights/000064",
+    }
+
+
 def test_reseed_replaces_legacy_runs_and_artifacts(tmp_path):
     store = Store(tmp_path)
     seed_synthetic(store)

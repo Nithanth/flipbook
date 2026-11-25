@@ -145,14 +145,15 @@ def seed_synthetic(store: Store, *, seed: int = 0) -> str:
                     "token_ids": list(range(gtok)), "token_logprobs": None,
                 })
         store.put_samples(rid, samples)
-        step_path = f"sampler_weights/{step:06d}" if step else "sampler_weights/final"
         n_ok = sum(s["verdict"] for s in samples)
         store.put_run({
             "run_id": rid, "config_fp": f"synthetic-{label}",
             "created_at": datetime.now(UTC).isoformat(),
             "manifest_hash": man.manifest_hash, "study": STUDY, "source": "synthetic",
             "label": label, "model_id": "synthetic/Inkling-Small",
-            "checkpoint_path": None if step is None else f"tinker://synthetic/{step_path}",
+            "checkpoint_path": (
+                None if step is None else f"tinker://synthetic/sampler_weights/{step:06d}"
+            ),
             "base_model": "synthetic/Inkling-Small" if step else None,
             "train_step": step,
             "renderer": "tml_v0", "renderer_version": "synthetic",
