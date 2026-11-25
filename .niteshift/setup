@@ -16,7 +16,7 @@ uv sync --locked --python 3.12
 )
 
 # Keep CLI commands and the preview on the same store. Retry interrupted seeds.
-if [[ ! -f flipbook_store/.niteshift-seeded ]]; then
+if [[ ! -f flipbook_store/.niteshift-seeded-text-v1 ]]; then
     .venv/bin/flipbook demo --store ./flipbook_store --synthetic
-    touch flipbook_store/.niteshift-seeded
+    touch flipbook_store/.niteshift-seeded-text-v1
 fi

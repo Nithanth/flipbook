@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import random
+import re
 from datetime import UTC, datetime
 
 from flipbook.manifest import Manifest
@@ -29,6 +30,25 @@ _QUESTIONS = [
     ("Tom is twice as old as Sam. Together their ages sum to 36. How old is Sam?", "12"),
     ("A tank holds 50 L and loses 3 L per hour. How many litres remain after 9 hours?", "23"),
     ("Compute (3 + 4) * (8 - 2) - 7.", "35"),
+]
+
+# The demo uses a small, offline tokenization of its authored responses.
+# Keep whitespace on the next piece so concatenating pieces reproduces the text.
+def demo_tokens(text: str) -> list[str]:
+    return re.findall(r"\s*\w+|\s*[^\w\s]|\s+$", text)
+
+
+_REASONING = [
+    "Three notebooks cost 3 times 4 dollars, which is 12 dollars. Subtract that from 20.",
+    "Average speed is distance divided by time. I divide 180 kilometres by 2 hours.",
+    "Add 7 to both sides to get 5x = 25. Divide both sides by 5.",
+    "Half the perimeter is 15. Subtract the width of 4 to get length 11, then multiply by 4.",
+    "The scores sum to 240. There are three tests, so divide the total by 3.",
+    "There are 20 marbles altogether. The red fraction is 12 divided by 20.",
+    "Ten percent of 240 is 24. Five percent is half of that, or 12. Add the two amounts.",
+    "Sam accounts for one of three equal shares of their total age. Divide 36 by 3.",
+    "The tank loses 3 times 9 litres, or 27 litres. Subtract 27 from the initial 50.",
+    "The parentheses give 7 and 6. Multiply to get 42, then subtract 7.",
 ]
 
 # the collapse story: (label, train_step, acc@2-samples)
@@ -57,10 +77,9 @@ def _sample_text(ok: bool, gold: str, collapse: bool, rng: random.Random) -> tup
 
 def _divergence_row(rng: random.Random, row_id: str, base_id: str, ckpt_id: str,
                     sample_idx: int, prompt_len: int, ramp_nats: float,
-                    skip_base: float, skip_ckpt: float) -> dict:
-    n = rng.randint(300, 500)
+                    skip_base: float, skip_ckpt: float, n: int) -> dict:
     lp_base = [rng.gauss(-0.05, 0.12) for _ in range(n)]
-    onset = rng.randint(60, 180)
+    onset = rng.randrange(max(1, n // 4), max(2, n // 2))
     # per-token delta: baseline noise, then a negative ramp once the collapse
     # bites - mirrors what real SFT collapse looked like in the nats trace
     delta = [
@@ -125,7 +144,7 @@ def seed_synthetic(store: Store, *, seed: int = 0) -> str:
         rid = f"syn_{label}"
         run_ids[label] = rid
         samples = []
-        for r in rows:
+        for index, r in enumerate(rows):
             # per-row skill around the step's mean -> natural pass@2 > pass@1
             # spread and a mix of hard regressions vs near-misses
             skill = min(0.99, max(0.0, rng.gauss(acc, 0.10)))
@@ -134,6 +153,9 @@ def seed_synthetic(store: Store, *, seed: int = 0) -> str:
                 ok = sidx < correct
                 text, ext, fk, gtok = _sample_text(
                     ok, r["gold"], collapse=step is not None, rng=rng)
+                if ok:
+                    text = f"{_REASONING[index]}\n\nThe answer is {ext}."
+                gtok = len(demo_tokens(text))
                 samples.append({
                     "run_id": rid, "row_id": r["row_id"], "sample_idx": sidx,
                     "text": text, "prompt_tokens": rng.randint(80, 140),
@@ -142,7 +164,7 @@ def seed_synthetic(store: Store, *, seed: int = 0) -> str:
                     "verdict": 1.0 if ok else 0.0, "extracted": ext,
                     "failure_kind": fk, "grade_note": None, "error": None,
                     "est_cost_usd": gtok * 2e-6,
-                    "token_ids": list(range(gtok)), "token_logprobs": None,
+                    "token_ids": None, "token_logprobs": None,
                 })
         store.put_samples(rid, samples)
         step_path = f"sampler_weights/{step:06d}" if step else "sampler_weights/final"
@@ -155,7 +177,7 @@ def seed_synthetic(store: Store, *, seed: int = 0) -> str:
             "checkpoint_path": None if step is None else f"tinker://synthetic/{step_path}",
             "base_model": "synthetic/Inkling-Small" if step else None,
             "train_step": step,
-            "renderer": "tml_v0", "renderer_version": "synthetic",
+            "renderer": "tml_v0", "renderer_version": "synthetic-text-v1",
             "effort": 0.9, "temperature": 0.6, "max_tokens": 4096,
             "k": 2, "seed": seed,
             "grader_id": "benchmark-native", "grader_version": "synthetic",
@@ -170,11 +192,14 @@ def seed_synthetic(store: Store, *, seed: int = 0) -> str:
         })
 
     # divergence traces: the cliff at step24, a milder one at final
+    baseline = [s for s in store.samples(run_ids["baseline"]).to_pylist()
+                if s["sample_idx"] == 0]
     for label, ramp, skip_c in (("step24", 4.5, 0.62), ("final", 0.9, 0.04)):
         store.put_divergence(
             run_ids["baseline"], run_ids[label],
             [_divergence_row(rng, r["row_id"], run_ids["baseline"], run_ids[label],
-                             0, 110, ramp, 0.001, skip_c) for r in rows],
+                             0, r["prompt_tokens"], ramp, 0.001, skip_c, r["gen_tokens"])
+             for r in baseline],
         )
 
     # train loss keeps falling while eval craters - the story's whole point

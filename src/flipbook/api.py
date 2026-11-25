@@ -24,6 +24,7 @@ from flipbook.graders import strip_control_tokens
 from flipbook.rollouts import rollout_summary, rollout_texts
 from flipbook.stats import compare
 from flipbook.store import Store
+from flipbook.synthetic import demo_tokens
 
 # sample rows carry token_ids/logprobs/messages
 _HEAVY_COLS = {"token_ids", "token_logprobs", "messages"}
@@ -286,7 +287,11 @@ def create_app(store_path: str | Path) -> FastAPI:
         model_id = run.get("base_model") or run.get("model_id") or run.get("model")
         delta = drow["delta"]
         if run.get("source") == "synthetic":
-            reason = "This demo stores synthetic scores without decoded token text."
+            if run.get("renderer_version") == "synthetic-text-v1":
+                pieces = demo_tokens((srow or {}).get("text") or "")
+                if len(pieces) == len(delta):
+                    return {"tokens": [{"t": t, "d": d} for t, d in zip(pieces, delta)]}
+            reason = "This demo has no aligned token text. Regenerate it with flipbook demo --synthetic."
         elif not ids or len(ids) != len(delta):
             reason = "The stored token IDs are missing or do not align with the scores."
         elif not model_id:
