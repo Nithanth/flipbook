@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { api, type PairReport, type RowDetail, type RowSample, type Run } from "../api";
+import { api, type TokenTrace, type PairReport, type RowDetail, type RowSample, type Run } from "../api";
 import Tip from "../Tip";
 import Md from "../Md";
-import { firstDivPos, Trace } from "../Trace";
+import { firstDivPos, traceTokens, Trace } from "../Trace";
 import { runLabel } from "../runLabel";
 import SyntheticNotice from "../SyntheticNotice";
 import { onRoute } from "../route";
@@ -696,7 +696,8 @@ function RowPanel({
 }) {
   const [d, setD] = useState<RowDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [toks, setToks] = useState<{ t: string; d: number }[] | null>(null);
+  const [trace, setTrace] = useState<TokenTrace | null>(null);
+  const toks = trace && traceTokens(trace);
   // different renderers → no shared vocabulary, so per-token views are meaningless
   const tokenViews = pair.comparability?.token_views !== false;
   useEffect(() => {
@@ -705,13 +706,15 @@ function RowPanel({
     api.compareRow(pair.run_a, pair.run_b, row).then(setD).catch((e) => setErr(String(e)));
   }, [pair.run_a, pair.run_b, row]);
   useEffect(() => {
-    setToks(null);
+    setTrace(null);
+    let active = true;
     if (!tokenViews) return;
     // no divergence computed for this pair → the section just stays out
     api
       .divergenceTrace(pair.run_a, pair.run_b, row, 0)
-      .then((r) => setToks(r.tokens))
+      .then(r => { if (active) setTrace(r); })
       .catch(() => {});
+    return () => { active = false; };
   }, [pair.run_a, pair.run_b, row, tokenViews]);
 
   if (err) return <p className="err">{err}</p>;
@@ -750,7 +753,7 @@ function RowPanel({
           <div className="mini-label">
             where ckpt diverges on base's trace (sample 0)
           </div>
-          <Trace tokens={toks} mark={divPos} />
+          <Trace tokens={toks} reason={trace?.reason} mark={divPos} />
           <div className="sub" style={{ marginTop: 6 }}>
             {toks.length.toLocaleString()} tokens · Σ{" "}
             {toks.reduce((a, t) => a + t.d, 0).toFixed(1)} nats

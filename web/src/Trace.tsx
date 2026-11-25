@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, type BranchResult } from "./api";
+import { api, type TokenTrace, type BranchResult } from "./api";
 
 // same cumulative-nats threshold the backend's divergence_pos uses (diverge.TAU)
 const DIVERGE_TAU = 5.0;
@@ -22,11 +22,13 @@ export function firstDivPos(delta: number[]): number | null {
  *  onPick/cut wire "click a token to set the branch cut" through the parent. */
 export function Trace({
   tokens,
+  reason,
   mark,
   onPick,
   cut,
 }: {
   tokens: { t: string; d: number }[];
+  reason?: string;
   mark?: number | null;
   onPick?: (i: number) => void;
   cut?: number | null;
@@ -63,7 +65,8 @@ export function Trace({
   return (
     <>
       <div className="sub" style={{ marginBottom: 6 }}>
-        baseline trace colored by Δlogprob per token -{" "}
+        {reason && <p>{reason} Numbers below are token positions.</p>}
+        Baseline trace colored by Δlogprob per token ·{" "}
         <span style={{ color: "var(--neg)" }}>red</span> = ckpt less confident,{" "}
         <span style={{ color: "var(--accent)" }}>blue</span> = more confident
         {mark != null ? " · amber edge = first divergence" : ""}
@@ -124,7 +127,7 @@ export function Trace({
   );
 }
 
-/** The baseline's actual trace text, heat-mapped by per-token Δlogprob. Falls back to the bar sparkline when token ids aren't in the store. */
+/** The baseline's actual trace text, heat-mapped by per-token Δlogprob. Uses numbered positions when only the scores are available. */
 export function TraceView({
   base,
   ckpt,
@@ -144,20 +147,25 @@ export function TraceView({
   onPick?: (i: number) => void;
   cut?: number | null;
 }) {
-  const [toks, setToks] = useState<{ t: string; d: number }[] | null>(null);
-  const [failed, setFailed] = useState(false);
+  const [trace, setTrace] = useState<TokenTrace | null>(null);
+  const [error, setError] = useState("");
   useEffect(() => {
-    setToks(null);
-    setFailed(false);
-    api
-      .divergenceTrace(base, ckpt, row, sample)
-      .then((r) => setToks(r.tokens))
-      .catch(() => setFailed(true));
+    let active = true;
+    setTrace(null);
+    setError("");
+    api.divergenceTrace(base, ckpt, row, sample)
+      .then(result => { if (active) setTrace(result); })
+      .catch(e => { if (active) setError(String(e)); });
+    return () => { active = false; };
   }, [base, ckpt, row, sample]);
 
-  if (failed) return <Spark delta={delta} mark={mark} w={800} h={72} />;
-  if (!toks) return <p className="sub">loading trace…</p>;
-  return <Trace tokens={toks} mark={mark} onPick={onPick} cut={cut} />;
+  if (error) return <><p className="err">Could not load token trace: {error}</p><Spark delta={delta} mark={null} w={800} h={72} /></>;
+  if (!trace) return <p className="sub">loading trace…</p>;
+  return <Trace tokens={traceTokens(trace)} reason={trace.reason} mark={mark} onPick={onPick} cut={cut} />;
+}
+
+export function traceTokens(trace: TokenTrace) {
+  return trace.delta?.map((d, i) => ({ t: `${i} `, d })) ?? trace.tokens;
 }
 
 /** Delta sparkline: red = ckpt less confident than base, blue = more.

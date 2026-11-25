@@ -163,6 +163,10 @@ export default function Divergence() {
                     {r.p_skip_base.toFixed(3)} → {r.p_skip_ckpt.toFixed(3)}
                   </td>
                   <td>
+                    <button type="button" aria-expanded={isOpen} onClick={e => {
+                      e.stopPropagation();
+                      setOpen(isOpen ? null : key);
+                    }}>{isOpen ? "Hide trace" : "Show trace"}</button>
                     <Spark delta={r.delta} mark={r.divergence_pos} n={r.n ?? undefined} scale={sparkScale} />
                   </td>
                 </tr>,
@@ -197,7 +201,10 @@ function PairRead({
 }) {
   if (!rows.length) return null;
   const n = rows.length;
-  const med = (xs: number[]) => xs.slice().sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+  const med = (xs: number[]) => {
+    const sorted = [...xs].sort((a, b) => a - b);
+    return (sorted[Math.floor((xs.length - 1) / 2)] + sorted[Math.floor(xs.length / 2)]) / 2;
+  };
   const medSum = med(rows.map((r) => r.sum_nats));
   const fracs = rows
     .filter((r) => r.divergence_pos != null && r.n)

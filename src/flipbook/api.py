@@ -261,9 +261,6 @@ def create_app(store_path: str | Path) -> FastAPI:
         row: str = Query(...),
         sample: int = Query(...),
     ) -> dict:
-        # pairs each delta with the baseline's token string so the UI can render
-        # the trace as colored text — 404s (not a sparse delta array) when the
-        # store predates token_ids
         if not (store.path / "divergence" / f"{base}__{ckpt}.parquet").exists():
             raise HTTPException(404, f"no divergence for {base} vs {ckpt}")
         drow = next(
@@ -285,22 +282,24 @@ def create_app(store_path: str | Path) -> FastAPI:
             None,
         )
         ids = (srow or {}).get("token_ids")
-        if not ids:
-            raise HTTPException(404, "no baseline token ids for this sample")
         run = next((r for r in _run_list() if r["run_id"] == base), {})
-        model_id = run.get("model_id") or run.get("model")
-        if not model_id:
-            raise HTTPException(404, f"no model recorded on run {base}")
-        try:
-            tok = _tokenizer(model_id)
-        except OSError:
-            raise HTTPException(404, f"no tokenizer available for {model_id}")
-        return {
-            "tokens": [
-                {"t": tok.decode([int(i)]), "d": d}
-                for i, d in zip(ids, drow["delta"])
-            ]
-        }
+        model_id = run.get("base_model") or run.get("model_id") or run.get("model")
+        delta = drow["delta"]
+        if run.get("source") == "synthetic":
+            reason = "This demo stores synthetic scores without decoded token text."
+        elif not ids or len(ids) != len(delta):
+            reason = "The stored token IDs are missing or do not align with the scores."
+        elif not model_id:
+            reason = "The baseline has no recorded tokenizer model."
+        else:
+            try:
+                tok = _tokenizer(model_id)
+            except OSError:
+                reason = f"The tokenizer for {model_id} is unavailable."
+            else:
+                return {"tokens": [{"t": tok.decode([int(i)]), "d": d}
+                                   for i, d in zip(ids, delta)]}
+        return {"tokens": [], "delta": delta, "reason": reason}
 
     @app.get("/api/effort/runs")
     def effort_runs() -> list[dict]:
