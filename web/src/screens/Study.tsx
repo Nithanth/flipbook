@@ -99,7 +99,7 @@ export default function Study() {
     <>
       <h1>study</h1>
       <SyntheticNotice runs={detail?.study === study ? detail.runs : []} />
-      <p className="page-sub">one training run, every checkpoint: did the eval move, and what moved first?</p>
+      <p className="page-sub">Compare held-out performance across checkpoints and inspect the answers that changed.</p>
       <div className="row">
         <label>
           study{" "}
@@ -141,8 +141,8 @@ export default function Study() {
       )}
       {detail && derived && derived.rows.length > 0 && (
         <>
-          <Hero d={derived} go={go} />
           <Narrative d={derived} runs={detail.runs} />
+          <Hero d={derived} go={go} />
           <MetricStrip d={derived} focus={focus} onFocus={setFocus} go={go} />
         </>
       )}
@@ -706,7 +706,7 @@ function Narrative({ d, runs }: { d: Derived; runs: Run[] }) {
     });
   } else {
     bullets.push({
-      t: `pass@1 stayed flat through training (${pct(evals[0].pass1!)} → ${pct(last.pass1!)}) - no eval-visible regression`,
+      t: `pass@1 went from ${pct(first.pass1!)} at step ${first.step} to ${pct(last.pass1!)} at step ${last.step}`,
       href: cmp(last.step),
     });
   }
@@ -766,7 +766,7 @@ function Narrative({ d, runs }: { d: Derived; runs: Run[] }) {
 
   return (
     <div className="card read">
-      <div className="mini-label">the read</div>
+      <div className="mini-label">Regression assessment</div>
       <p className="verdict">{verdict}</p>
       {[...rlBullets, ...bullets].slice(0, 5).map((b) =>
         b.href ? (
