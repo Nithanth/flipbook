@@ -490,3 +490,6 @@ nav .connect-link { color: var(--accent); border: 1px solid var(--border); }
 .connect button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 .connect pre { padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 680px) { nav { flex-wrap: wrap; } }
+
+.investigation-example { margin: 10px 0; }
+.investigation-example button { font: inherit; color: var(--accent); background: none; border: 0; padding: 0; text-align: left; text-decoration: underline; cursor: pointer; }
