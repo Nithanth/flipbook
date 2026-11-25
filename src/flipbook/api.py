@@ -8,6 +8,7 @@ import json
 import time
 from functools import lru_cache
 from pathlib import Path
+from statistics import median
 from typing import Literal
 
 import pyarrow as pa
@@ -199,7 +200,7 @@ def create_app(store_path: str | Path) -> FastAPI:
                 "base": base,
                 "ckpt": ckpt,
                 "self": base == ckpt,
-                "median_nats": sorted(sums)[len(sums) // 2] if sums else 0.0,
+                "median_nats": median(sums) if sums else 0.0,
                 "max_abs_nats": max((abs(x) for x in sums), default=0.0),
             })
         floor = max((p["max_abs_nats"] for p in out if p["self"]), default=None)
@@ -372,10 +373,12 @@ def create_app(store_path: str | Path) -> FastAPI:
             (_norm_run(r) for r in _run_list(name)),
             key=lambda r: r.get("train_step") if r.get("train_step") is not None else -1,
         )
-        if not sruns and not (store.path / "rollouts" / f"{name}.parquet").exists():
+        has_metrics = (store.path / "training_metrics" / f"{name}.parquet").exists()
+        has_rollouts = (store.path / "rollouts" / f"{name}.parquet").exists()
+        if not (sruns or has_metrics or has_rollouts):
             raise HTTPException(404, f"no study {name}")
         metrics: dict[str, list[dict]] = {}
-        if (store.path / "training_metrics" / f"{name}.parquet").exists():
+        if has_metrics:
             for r in _rows(store.training_metrics(name)):
                 metrics.setdefault(r["key"], []).append({"step": r["step"], "value": r["value"]})
         # a checkpoint eval has everything a chart needs in its samples -
@@ -396,14 +399,17 @@ def create_app(store_path: str | Path) -> FastAPI:
             base_pair = None
             for r in sruns:
                 st = r.get("train_step")
-                if (st is None or st in charted or r["run_id"] == base["run_id"]
-                        or r.get("state") == "running"):
+                if st is None or r.get("state") == "running":
+                    continue
+                if st in charted and (has_step0 or base_pair is not None):
                     continue
                 pair = _compare_live(base["run_id"], r["run_id"])
                 if not pair["n_pairs"]:
                     continue
                 if base_pair is None and not has_step0:
                     base_pair = pair
+                if st in charted:
+                    continue
                 stats = {
                     "pass1": pair["acc_b"], "delta_vs_base": pair["delta"],
                     "delta_ci_lo": pair["delta_ci"][0], "delta_ci_hi": pair["delta_ci"][1],
@@ -467,7 +473,7 @@ def create_app(store_path: str | Path) -> FastAPI:
                         effort[run] = sum(gaps) / len(gaps)
         return {"study": name, "runs": json.loads(json.dumps(sruns, default=str)),
                 "metrics": metrics, "effort_gap": effort,
-                "has_rollouts": (store.path / "rollouts" / f"{name}.parquet").exists()}
+                "has_rollouts": has_rollouts}
 
     @app.get("/api/budget/{run_id}")
     def run_budget(run_id: str) -> dict:

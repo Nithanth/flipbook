@@ -75,6 +75,13 @@ def test_samples_strips_heavy_cols(tmp_path):
     assert c.get("/api/runs/ghost/samples").status_code == 404
 
 
+def test_even_divergence_median(tmp_path):
+    store = _store(tmp_path)
+    store.put_divergence("a", "b", [{"row_id": "r1", "sample_idx": 0, "sum_nats": -0.2}])
+    pair, = _client(tmp_path).get("/api/divergence/pairs").json()
+    assert pair["median_nats"] == pytest.approx(-0.5)
+
+
 def test_compare_endpoint(tmp_path):
     _store(tmp_path)
     c = _client(tmp_path)
@@ -221,6 +228,9 @@ def test_studies_union(tmp_path):
     store.put_run({"run_id": "orphan", "study": "no_metrics"})
     c = _client(tmp_path)
     assert set(c.get("/api/studies").json()) == {"s1", "no_metrics"}
+    detail = c.get("/api/studies/s1").json()
+    assert detail["runs"] == []
+    assert detail["metrics"]["loss"] == [{"step": 8, "value": 0.5}]
 
 
 def test_load_env_file(tmp_path, monkeypatch):
@@ -256,7 +266,8 @@ def test_study_charts_baseline_step(tmp_path):
     assert abs(step0["value"] - 0.95) < 0.01
 
 
-def test_study_synthesizes_into_the_evaluator_namespace(tmp_path):
+@pytest.mark.parametrize("logged_steps", [[24], [24, 48, 64]])
+def test_study_synthesizes_into_the_evaluator_namespace(tmp_path, logged_steps):
     # an in-loop evaluator already wrote step 24 under its own prefix; the
     # synthesized points for the other checkpoints must join that series
     from flipbook.synthetic import seed_synthetic
@@ -264,10 +275,13 @@ def test_study_synthesizes_into_the_evaluator_namespace(tmp_path):
     store = Store(tmp_path)
     seed_synthetic(store)
     store.put_training_metrics("synthetic", [
-        {"study": "synthetic", "step": 24, "key": "flipbook/m/pass1", "value": 0.0}])
+        {"study": "synthetic", "step": step, "key": "flipbook/m/pass1", "value": 0.11}
+        for step in logged_steps])
     d = _client(tmp_path).get("/api/studies/synthetic").json()
     assert "eval/pass1" not in d["metrics"]
-    assert {p["step"] for p in d["metrics"]["flipbook/m/pass1"]} == {0, 24, 48, 64}
+    points = d["metrics"]["flipbook/m/pass1"]
+    assert sorted(p["step"] for p in points) == [0, 24, 48, 64]
+    assert all(p["value"] == 0.11 for p in points if p["step"] in logged_steps)
 
 
 def test_study_does_not_chart_step0_twice(tmp_path):
