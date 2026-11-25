@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+uv sync --locked --python 3.12
+
+(
+    cd web
+    inputs=$(sha256sum package.json package-lock.json)
+    stamp=node_modules/.niteshift-dependencies
+    if [[ ! -x node_modules/.bin/vite || ! -f "$stamp" || "$(cat "$stamp")" != "$inputs" ]]; then
+        npm ci --no-audit --no-fund
+        printf '%s\n' "$inputs" > "$stamp"
+    fi
+    npm run build
+)
+
+# Keep CLI commands and the preview on the same store. Retry interrupted seeds.
+if [[ ! -f flipbook_store/.niteshift-seeded ]]; then
+    .venv/bin/flipbook demo --store ./flipbook_store --synthetic
+    touch flipbook_store/.niteshift-seeded
+fi
