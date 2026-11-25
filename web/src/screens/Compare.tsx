@@ -141,12 +141,12 @@ export default function Compare() {
 
   return (
     <>
-      <h1>compare</h1>
+      <header className="compare-heading"><h1>Compare checkpoints</h1>
       <SyntheticNotice runs={runs.filter((r) => r.run_id === a || r.run_id === b)} />
-      <p className="page-sub">two runs graded on the same frozen questions - what changed?</p>
+      </header>
       <div className="row">
         <label>
-          eval{" "}
+          Evaluation{" "}
           <Tip text="The frozen question set both runs were graded on. Comparing across evals is meaningless - no paired rows - so the run pickers below only offer runs from this eval.">
             ?
           </Tip>{" "}
@@ -163,12 +163,10 @@ export default function Compare() {
             })}
           </select>
         </label>
-        <RunPicker label="base" runs={onManifest} value={a} onChange={(v) => { setA(v); writePairHash(v, b, true); }} other={runs.find((r) => r.run_id === b)} />
-        <RunPicker label="ckpt" runs={onManifest} value={b} onChange={(v) => { setB(v); writePairHash(a, v, true); }} other={runs.find((r) => r.run_id === a)} />
+        <RunPicker label="Baseline" runs={onManifest} value={a} onChange={(v) => { setA(v); writePairHash(v, b, true); }} other={runs.find((r) => r.run_id === b)} />
+        <RunPicker label="Checkpoint" runs={onManifest} value={b} onChange={(v) => { setB(v); writePairHash(a, v, true); }} other={runs.find((r) => r.run_id === a)} />
       </div>
-      {pair && (
-        <ContextLine pair={pair} runs={runs} />
-      )}
+
       {err && <p className="err">{err}</p>}
       {warnings.length > 0 && (
         <div className="banner warn">
@@ -182,23 +180,6 @@ export default function Compare() {
       )}
       {pair && pair.run_a === a && pair.run_b === b && <Report key={JSON.stringify([a, b])} pair={pair} runs={runs} />}
     </>
-  );
-}
-
-/** What am I comparing? study · manifest · label names, for someone who landed via a deep link. */
-function ContextLine({ pair, runs }: { pair: PairReport; runs: Run[] }) {
-  const ra = runs.find((r) => r.run_id === pair.run_a);
-  const rb = runs.find((r) => r.run_id === pair.run_b);
-  const bits = [
-    ra?.study ?? rb?.study,
-    ra?.manifest ?? ra?.manifest_hash?.slice(0, 10),
-    ra?.model ?? rb?.model,
-  ].filter(Boolean);
-  return (
-    <p className="sub" style={{ marginTop: -8 }}>
-      {runLabel(ra, pair.run_a)} → {runLabel(rb, pair.run_b)}
-      {bits.length ? ` · ${bits.join(" · ")}` : ""}
-    </p>
   );
 }
 
@@ -259,6 +240,10 @@ function RunPicker({
 
 function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
   const [investigate, setInvestigate] = useState(hashParams().has("investigate"));
+  function inspectRow(row: string) {
+    setOpen(row);
+    requestAnimationFrame(() => document.getElementById("rowpanel")?.scrollIntoView({ block: "start" }));
+  }
   const ag = pair.agreement;
   const labelA = runLabel(runs.find((r) => r.run_id === pair.run_a), pair.run_a);
   const labelB = runLabel(runs.find((r) => r.run_id === pair.run_b), pair.run_b);
@@ -285,10 +270,20 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
   const filterable = !!Object.keys(pair.failure_rows_b ?? {}).length;
   return (
     <>
-      {investigate ? <Investigation pair={pair} inspect={row => {
-        setOpen(row);
-        requestAnimationFrame(() => document.getElementById("rowpanel")?.scrollIntoView({ block: "start" }));
-      }} /> : <button className="hotchip" onClick={() => setInvestigate(true)}>Investigate this regression</button>}
+      {pair.n_pairs > 0 && <section className="compare-result" aria-label="Paired results">
+        <div><span>Mean held-out score</span><strong>{pct(pair.acc_a)} <i>→</i> {pct(pair.acc_b)}</strong></div>
+        <dl>{[[ag.a_only, "Regressed"], [ag.b_only, "Improved"], [ag.both_right + ag.both_wrong, "Same outcome"]].map(([value, label]) =>
+          <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+      </section>}
+      {investigate ? <Investigation pair={pair} inspect={inspectRow} /> : <button className="hotchip" onClick={() => setInvestigate(true)}>Investigate this regression</button>}
+      {open && (
+        <div className="rowpanel" id="rowpanel">
+          <RowPanel key={open} pair={pair} row={open} labelA={labelA} labelB={labelB} />
+        </div>
+      )}
+
+      <details className="compare-details"><summary>Comparison statistics</summary>
+      <ContextDetails runs={runs} pair={pair} />
       <div className="cards">
         <div className="card">
           <div className="big">
@@ -358,11 +353,6 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
           <div className="sub">estimated cost</div>
         </div>
       </div>
-      <p className="sub" style={{ marginTop: 2 }}>
-        green/red = ckpt relative to base - swap the two pickers and every sign
-        flips. a regression here is "was right under base, wrong under ckpt".
-      </p>
-
       <PairRead pair={pair} />
 
       <h2>
@@ -431,6 +421,7 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
         </>
       )}
 
+      </details>
       {pair.cells && pair.cells.length > 0 && (
         <>
           <h2>
@@ -492,7 +483,7 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
                   }`}
                   style={bg ? { background: bg } : undefined}
                   title={`${c.q ? c.q + "\n" : ""}${c.row_id} · ${c.p_a == null ? "-" : c.p_a.toFixed(2)} → ${c.p_b == null ? "-" : c.p_b.toFixed(2)}${hard ? " · status flip" : dp != null && Math.abs(dp) >= 0.5 ? " · reliability shift" : ""}`}
-                  onClick={() => setOpen(open === c.row_id ? null : c.row_id)}
+                  onClick={() => open === c.row_id ? setOpen(null) : inspectRow(c.row_id)}
                 />
               );
             })}
@@ -537,14 +528,8 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
         </>
       )}
 
-      {open && (
-        <div className="rowpanel" id="rowpanel">
-          <RowPanel key={open} pair={pair} row={open} labelA={labelA} labelB={labelB} />
-        </div>
-      )}
-
       {pair.flips.length > 0 && (
-        <>
+        <details className="compare-details"><summary>Changed questions ({pair.flips.length})</summary>
           <h2>
             questions that flipped{" "}
             <button
@@ -581,7 +566,7 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
                 <tr
                   key={f.row_id}
                   className={`${f.kind} fliprow${open === f.row_id ? " fk-on" : ""}`}
-                  onClick={() => setOpen(open === f.row_id ? null : f.row_id)}
+                  onClick={() => open === f.row_id ? setOpen(null) : inspectRow(f.row_id)}
                 >
                   <td title={f.q ?? f.row_id} style={{ maxWidth: 420 }}>
                     {f.q ? <div className="qcell-md"><Md text={f.q} /></div> : <span className="mono">{f.row_id}</span>}
@@ -596,7 +581,7 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
               ))}
             </tbody>
           </table>
-        </>
+        </details>
       )}
 
       {pair.excluded.length > 0 && (
@@ -616,6 +601,11 @@ function Report({ pair, runs }: { pair: PairReport; runs: Run[] }) {
       )}
     </>
   );
+}
+
+function ContextDetails({ runs, pair }: { runs: Run[]; pair: PairReport }) {
+  const run = runs.find(r => r.run_id === pair.run_a);
+  return <p className="sub">{[run?.study, run?.manifest ?? run?.manifest_hash, run?.model].filter(Boolean).join(" · ")}</p>;
 }
 
 function pct(x: number) {

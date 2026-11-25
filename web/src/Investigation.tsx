@@ -34,30 +34,34 @@ export default function Investigation({ pair, inspect }: {
   const outside = leading && candidates.find(c => !leading.rows.includes(c));
   const second = outside ?? candidates.find(c => c !== first);
   const percent = (x: number) => (100 * x).toFixed(1) + "%";
-  return <section className="card read" aria-label="Regression investigation">
-    <h2>Regression investigation</h2>
-    <p>Mean score {percent(pair.acc_a)} → {percent(pair.acc_b)} across {pair.n_pairs} paired questions.
-      {" "}{pair.agreement.a_only} regressed, {pair.agreement.b_only} improved, and {pair.agreement.both_right + pair.agreement.both_wrong} kept the same majority outcome.</p>
-    {pair.excluded.length > 0 && <p>{pair.excluded.length} questions excluded from the paired comparison.</p>}
-    {leading ? <>
-      <p>Checkpoint failure labels on regressed questions (a question can have several labels):</p>
-      <ul>{kinds.map(k => <li key={k.kind}>{k.kind}: {k.rows.length} of {drops.length} questions</li>)}</ul>
-    </> : drops.length > 0 && <p>No failure labels were recorded for the regressed questions.</p>}
-    {first && <h3>Answers to inspect</h3>}
+  return <section className="investigation-layout" aria-label="Regression investigation">
+    <div className="investigation-patterns">
+      <h2>Failure patterns</h2>
+      {leading ? <>
+        <p className="sub">Questions affected out of {drops.length} regressions · labels can overlap</p>
+        {kinds.map(k => <div className="failure-bar" key={k.kind}>
+          <span>{k.kind}</span><strong>{k.rows.length} / {drops.length}</strong>
+          <div><i style={{width: `${100 * k.rows.length / drops.length}%`}} /></div>
+        </div>)}
+      </> : <p>{drops.length ? "No recorded failure labels." : "No majority outcomes regressed."}</p>}
+      {pair.excluded.length > 0 && <p className="sub">{pair.excluded.length} excluded questions</p>}
+    </div>
+    <div className="investigation-evidence">
+    {first && <h2>Answers to inspect</h2>}
     {[first, second].map(c => {
       if (!c) return null;
       const trace = traces.find(t => t.row_id === c.row_id && t.divergence_pos != null)
         ?? traces.find(t => t.row_id === c.row_id);
       const query = trace && new URLSearchParams({ base: pair.run_a, ckpt: pair.run_b, row: c.row_id, sample: String(trace.sample_idx) });
       return <div key={c.row_id} className="investigation-example">
+        {leading && <span className="sub">{outside === c ? "Exception" : "Example"} · {leading.kind}</span>}
         <button onClick={() => inspect(c.row_id)}>{c.q || c.row_id}</button>
         <div className="sub">Score {percent(c.p_a!)} → {percent(c.p_b!)}
-          {leading && (outside === c ? ` · Exception to the “${leading.kind}” pattern` :
-            leading.rows.includes(c) ? ` · Example of “${leading.kind}”` : "")}
-          {query && trace && <> · <a href={`#/divergence?${query}`}>Inspect baseline trace{trace.divergence_pos != null ? ` at token ${trace.divergence_pos}` : ""}</a></>}
+          {query && trace && <> · <a href={`#/divergence?${query}`}>Token trace →</a></>}
         </div>
       </div>;
     })}
     {traceError && <p className="sub">{traceError}</p>}
+    </div>
   </section>;
 }
