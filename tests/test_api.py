@@ -190,11 +190,13 @@ def test_divergence_trace(tmp_path, monkeypatch):
         params={"base": "a", "ckpt": "b", "row": "r1", "sample": 1},
     ).json()
     assert t["tokens"] == [{"t": "<5>", "d": -0.5}, {"t": "<7>", "d": -1.0}]
-    # r0:0 has divergence but no token_ids → honest 404, not a stub
-    assert c.get(
+    # Missing IDs preserve the full resolution scores without inventing decoded text.
+    fallback = c.get(
         "/api/divergence/trace",
         params={"base": "a", "ckpt": "b", "row": "r0", "sample": 0},
-    ).status_code == 404
+    ).json()
+    assert fallback["tokens"] == []
+    assert fallback["delta"] == pytest.approx([-0.8])
 
 
 def test_metrics_and_budget(tmp_path):

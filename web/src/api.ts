@@ -70,6 +70,12 @@ export interface Manifest {
   [k: string]: unknown;
 }
 
+export interface TokenTrace {
+  tokens: { t: string; d: number }[];
+  delta?: number[];
+  reason?: string;
+}
+
 export interface DivergencePair {
   base: string;
   ckpt: string;
@@ -218,7 +224,7 @@ export const api = {
     get<DivergenceRow[]>(`/api/divergence?base=${base}&ckpt=${ckpt}`),
   divergencePairs: () => get<DivergencePair[]>("/api/divergence/pairs"),
   divergenceTrace: (base: string, ckpt: string, row: string, sample: number) =>
-    get<{ tokens: { t: string; d: number }[] }>(
+    get<TokenTrace>(
       `/api/divergence/trace?base=${base}&ckpt=${ckpt}&row=${encodeURIComponent(row)}&sample=${sample}`,
     ),
   divergenceBranch: (base: string, ckpt: string, row: string, sample: number, pos: number) =>
